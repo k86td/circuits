@@ -17,6 +17,7 @@ import { connectionDegrees } from "../sim/netlist";
 import { evalValue, isTimeDependent } from "../sim/expr";
 import { formatSI } from "../sim/units";
 import type { App } from "./app";
+import { type CanvasPalette, theme, withAlpha } from "./theme";
 
 /** Pixels par unité de grille (zoom 1). */
 export const G = 20;
@@ -43,19 +44,10 @@ export interface DrawExtra {
   cursor: Vec | null;
 }
 
-const COL = {
-  wire: "#c7d2e0",
-  body: "#e2e8f0",
-  bg: "#0f172a",
-  grid: "rgba(148,163,184,0.18)",
-  select: "rgba(56,189,248,0.35)",
-  hover: "rgba(56,189,248,0.18)",
-  electron: "#38bdf8",
-  electronConv: "#fbbf24",
-  label: "#cbd5e1",
-  reading: "#7dd3fc",
-  meter: "#fde68a",
-};
+/** Couleurs du rendu, dérivées du thème Material courant (voir theme.ts). */
+function COL(): CanvasPalette {
+  return theme.canvas;
+}
 
 export function worldToScreen(p: Vec, view: View): Vec {
   return { x: p.x * view.zoom + view.pan.x, y: p.y * view.zoom + view.pan.y };
@@ -145,10 +137,11 @@ export function hitTest(app: App, p: Vec, zoom: number): Hit | null {
 
 function voltageColor(v: number, vmax: number): string {
   const x = Math.max(-1, Math.min(1, v / vmax));
+  const pal = COL();
   if (x >= 0) {
-    return mix("#94a3b8", "#f87171", x);
+    return mix(pal.voltageNeutral, pal.voltagePos, x);
   }
-  return mix("#94a3b8", "#60a5fa", -x);
+  return mix(pal.voltageNeutral, pal.voltageNeg, -x);
 }
 
 function mix(a: string, b: string, t: number): string {
@@ -168,19 +161,19 @@ export function drawSymbol(
   c: Component,
   opts: { leadColors?: string[]; glow?: number; scale?: number } = {},
 ): void {
-  const lc = opts.leadColors ?? [COL.wire, COL.wire, COL.wire, COL.wire];
+  const lc = opts.leadColors ?? [COL().wire, COL().wire, COL().wire, COL().wire];
   ctx.lineWidth = 2;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  ctx.strokeStyle = COL.body;
-  ctx.fillStyle = COL.body;
+  ctx.strokeStyle = COL().body;
+  ctx.fillStyle = COL().body;
   const lead = (x1: number, y1: number, x2: number, y2: number, color: string) => {
     ctx.strokeStyle = color;
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
     ctx.stroke();
-    ctx.strokeStyle = COL.body;
+    ctx.strokeStyle = COL().body;
   };
   switch (c.type) {
     case "resistor":
@@ -270,12 +263,12 @@ export function drawSymbol(
     case "ammeter": {
       lead(-40, 0, -14, 0, lc[0]);
       lead(14, 0, 40, 0, lc[1]);
-      ctx.fillStyle = COL.bg;
+      ctx.fillStyle = COL().bg;
       ctx.beginPath();
       ctx.arc(0, 0, 14, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = COL.body;
+      ctx.fillStyle = COL().body;
       if (c.type === "acsource") {
         ctx.beginPath();
         for (let k = 0; k <= 20; k++) {
@@ -321,7 +314,7 @@ export function drawSymbol(
         ctx.arc(0, 0, 12 + 26 * g, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.fillStyle = c.type === "led" ? (g > 0.02 ? "#fca5a5" : "#7f1d1d") : COL.body;
+      ctx.fillStyle = c.type === "led" ? (g > 0.02 ? "#fca5a5" : "#7f1d1d") : COL().body;
       ctx.beginPath();
       ctx.moveTo(-10, -10);
       ctx.lineTo(10, 0);
@@ -403,7 +396,7 @@ export function drawSymbol(
       lead(20, -20, 20, -16, lc[0]);
       lead(40, 20, 20, 20, lc[1]);
       lead(20, 20, 20, 16, lc[1]);
-      ctx.fillStyle = COL.bg;
+      ctx.fillStyle = COL().bg;
       ctx.beginPath();
       ctx.moveTo(20, -16);
       ctx.lineTo(36, 0);
@@ -412,7 +405,7 @@ export function drawSymbol(
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = COL.body;
+      ctx.fillStyle = COL().body;
       if (c.type === "vcvs" || c.type === "ccvs") {
         plus(ctx, 20, -8);
         ctx.beginPath();
@@ -429,7 +422,7 @@ export function drawSymbol(
         ctx.stroke();
       }
       ctx.lineWidth = 1;
-      ctx.strokeStyle = "rgba(226,232,240,0.5)";
+      ctx.strokeStyle = withAlpha(COL().body, 0.5);
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(-14, 0);
@@ -490,7 +483,7 @@ export class Renderer {
     const app = this.app;
     const { width, height } = extra;
     ctx.save();
-    ctx.fillStyle = COL.bg;
+    ctx.fillStyle = COL().bg;
     ctx.fillRect(0, 0, width, height);
     this.drawGrid(ctx, view, width, height);
 
@@ -500,9 +493,9 @@ export class Renderer {
     const sim = app.sim;
     const vmax = Math.max(1e-3, ...Array.from(sim.nodeVoltages).map(Math.abs));
     const colorOfPoint = (p: Vec): string => {
-      if (!app.options.voltageColors || sim.error) return COL.wire;
+      if (!app.options.voltageColors || sim.error) return COL().wire;
       const v = sim.voltageAt(pointKey(p));
-      return v === null ? COL.wire : voltageColor(v, vmax);
+      return v === null ? COL().wire : voltageColor(v, vmax);
     };
 
     // Fils
@@ -513,7 +506,7 @@ export class Renderer {
       const isSel = sel?.kind === "wire" && sel.id === w.id;
       const isHov = extra.hover?.kind === "wire" && extra.hover.id === w.id;
       if (isSel || isHov) {
-        ctx.strokeStyle = isSel ? COL.select : COL.hover;
+        ctx.strokeStyle = isSel ? COL().select : COL().hover;
         ctx.lineWidth = 10;
         ctx.lineCap = "round";
         ctx.beginPath();
@@ -547,7 +540,7 @@ export class Renderer {
       const isHov = extra.hover?.kind === "component" && extra.hover.id === c.id;
       if (isSel || isHov) {
         const b = componentBounds(c);
-        ctx.fillStyle = isSel ? COL.select : COL.hover;
+        ctx.fillStyle = isSel ? COL().select : COL().hover;
         roundRect(ctx, b.x - 4, b.y - 4, b.w + 8, b.h + 8, 8);
         ctx.fill();
       }
@@ -568,7 +561,7 @@ export class Renderer {
       for (const t of tps) {
         if ((deg.get(pointKey(t)) ?? 0) <= 1) {
           const w = gridToWorld(t);
-          ctx.strokeStyle = "rgba(248,113,113,0.8)";
+          ctx.strokeStyle = COL().unconnected;
           ctx.lineWidth = 1.5;
           ctx.beginPath();
           ctx.arc(w.x, w.y, 3.5, 0, Math.PI * 2);
@@ -586,7 +579,7 @@ export class Renderer {
     // Terminal survolé
     if (extra.hover && (extra.hover.kind === "terminal" || extra.hover.kind === "wireEnd")) {
       const w = gridToWorld(extra.hover.point);
-      ctx.fillStyle = "rgba(56,189,248,0.9)";
+      ctx.fillStyle = withAlpha(COL().electron, 0.9);
       ctx.beginPath();
       ctx.arc(w.x, w.y, 5, 0, Math.PI * 2);
       ctx.fill();
@@ -596,7 +589,7 @@ export class Renderer {
     if (extra.wirePreview) {
       const { a, b } = extra.wirePreview;
       const pts = a.x !== b.x && a.y !== b.y ? [a, { x: b.x, y: a.y }, b] : [a, b];
-      ctx.strokeStyle = "rgba(56,189,248,0.9)";
+      ctx.strokeStyle = withAlpha(COL().electron, 0.9);
       ctx.lineWidth = 2.5;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
@@ -630,7 +623,7 @@ export class Renderer {
     const step = G * view.zoom;
     if (step < 6) return;
     const every = step < 12 ? 5 : 1;
-    ctx.fillStyle = COL.grid;
+    ctx.fillStyle = COL().grid;
     const startX = Math.floor(-view.pan.x / (step * every)) * every;
     const startY = Math.floor(-view.pan.y / (step * every)) * every;
     const endX = startX + Math.ceil(width / step) + every;
@@ -669,7 +662,7 @@ export class Renderer {
       if (!r) continue;
       conductionPaths(c, r.i, r.ic).forEach((p, k) => paths.push({ key: `${c.id}#${k}`, pts: p.pts, i: p.i }));
     }
-    const color = app.options.conventional ? COL.electronConv : COL.electron;
+    const color = app.options.conventional ? COL().electronConv : COL().electron;
     ctx.fillStyle = color;
     const alive = new Set<string>();
     for (const p of paths) {
@@ -726,16 +719,16 @@ export class Renderer {
           if (typeof mv.value === "string") vt = isTimeDependent(mv.value) ? `${mv.value}` : formatSI(evalValue(mv.value, sim.time), mv.unit);
           else vt = formatSI(mv.value, mv.unit);
           if (vt.length > 22) vt = `${vt.slice(0, 20)}…`;
-          lines.push({ text: `${name}  ${vt}`, color: COL.label });
-        } else lines.push({ text: name, color: COL.label });
+          lines.push({ text: `${name}  ${vt}`, color: COL().label });
+        } else lines.push({ text: name, color: COL().label });
       }
       if (res && !sim.error) {
-        if (c.type === "voltmeter") lines.push({ text: formatSI(res.v, "V"), color: COL.meter });
-        else if (c.type === "ammeter") lines.push({ text: formatSI(res.i, "A"), color: COL.meter });
+        if (c.type === "voltmeter") lines.push({ text: formatSI(res.v, "V"), color: COL().meter });
+        else if (c.type === "ammeter") lines.push({ text: formatSI(res.i, "A"), color: COL().meter });
         else if (app.options.showReadings && c.type !== "ground") {
           const parts = [formatSI(res.v, "V"), formatSI(res.i, "A")];
           if (c.type !== "switch") parts.push(formatSI(res.p, "W"));
-          lines.push({ text: parts.join("  "), color: COL.reading });
+          lines.push({ text: parts.join("  "), color: COL().reading });
         }
       }
       if (lines.length === 0) continue;
@@ -746,8 +739,8 @@ export class Renderer {
         // valeur au-dessus, mesures en dessous
         const x = b.x + b.w / 2;
         ctx.textAlign = "center";
-        const above = lines.filter((l) => l.color === COL.label);
-        const below = lines.filter((l) => l.color !== COL.label);
+        const above = lines.filter((l) => l.color === COL().label);
+        const below = lines.filter((l) => l.color !== COL().label);
         above.forEach((l, k) => {
           ctx.fillStyle = l.color;
           ctx.fillText(l.text, x, b.y - 8 - (above.length - 1 - k) * 13);
@@ -824,13 +817,13 @@ export class Renderer {
     let x = s.x + 14;
     const y = s.y + 18;
     if (x + tw + 12 > extra.width) x = extra.width - tw - 12;
-    ctx.fillStyle = "rgba(15,23,42,0.92)";
-    ctx.strokeStyle = "rgba(148,163,184,0.5)";
+    ctx.fillStyle = COL().tooltipBg;
+    ctx.strokeStyle = COL().tooltipBorder;
     ctx.lineWidth = 1;
     roundRect(ctx, x - 6, y - 10, tw + 12, 20, 5);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = "#e2e8f0";
+    ctx.fillStyle = COL().tooltipText;
     ctx.fillText(text, x, y);
   }
 }

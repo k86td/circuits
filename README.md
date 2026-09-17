@@ -29,6 +29,15 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
 - **Mesures** : survol pour lire V, I et P ; voltmètre / ampèremètre ; affichage de V, I, P sur chaque composant.
 - **Oscilloscope** : tracé de la tension, du courant, de la puissance ou de la résistance (V/I) de n'importe quel
   composant en fonction du temps, fenêtre réglable de 1 ms à 30 s.
+- **Interface Material 3** : composants officiels [Material Web](https://github.com/material-components/material-web)
+  (boutons, curseurs, champs, dialogues, menus, interrupteurs) et icônes Material Symbols embarquées en SVG.
+- **Thème dynamique (Material You)** : le schéma de couleurs complet est généré avec
+  `@material/material-color-utilities` à partir d'une couleur source (préréglages, couleur personnalisée ou aléatoire),
+  d'un style (tonal, vif, expressif, neutre, monochrome…), d'un niveau de contraste et du mode clair / sombre /
+  système. Le canevas, les icônes et l'oscilloscope suivent le thème. Bouton « palette » dans la barre supérieure.
+- **Panneaux masquables** : la palette, les propriétés et l'oscilloscope se masquent / affichent depuis la barre
+  supérieure, leur bouton de fermeture ou les touches 1, 2, 3 ; la disposition est mémorisée. Sur écran étroit, les
+  panneaux latéraux se superposent au canevas.
 - **Fonctions du temps** : tout champ accepte un nombre avec préfixe SI (`4.7k`, `100u`) ou une expression de `t`,
   par exemple `5*sin(2*pi*60*t)`, `12*step(t-2m)`, `5*pulse(t, 10m, 0.25)`, `1k+500*sin(2*pi*t)`.
   Fonctions disponibles : `sin cos tan exp ln log10 sqrt abs sign floor min max pow mod step pulse square tri saw ramp expdecay`.
@@ -45,8 +54,13 @@ src/sim/examples.ts  circuits d'exemple
 src/ui/app.ts        état global, historique, sauvegarde, boucle de simulation
 src/ui/renderer.ts   rendu canvas (symboles, électrons, étiquettes)
 src/ui/editor.ts     interactions souris / clavier
-src/ui/panels.ts     palette, barre d'outils, propriétés, oscilloscope
+src/ui/panels.ts     palette, barre d'outils, propriétés, oscilloscope, dialogue de thème
 src/ui/scope.ts      oscilloscope
+src/ui/theme.ts      thème dynamique Material 3 (couleur source → variables --md-sys-color-*, palette canvas)
+src/ui/layout.ts     panneaux masquables (état mémorisé, mode compact)
+src/ui/material.ts   enregistrement des composants @material/web
+src/ui/icons.ts      icônes Material Symbols (SVG embarqués)
+src/ui/dom.ts        utilitaires DOM (sélecteur, filtrage des raccourcis, snackbar)
 ```
 
 ## Notes sur le moteur
