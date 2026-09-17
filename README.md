@@ -27,7 +27,10 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
   plafonnée (lisible du µA à l'ampère, sans effet stroboscopique), du − vers le +
   (ou dans le sens conventionnel au choix) ; des flèches indiquent le sens conventionnel du courant ; les fils sont
   colorés selon la tension ; ampoules et DEL s'allument.
-- **Mesures** : survol pour lire V, I et P ; voltmètre / ampèremètre ; affichage de V, I, P sur chaque composant.
+- **Mesures** : survol pour lire V, I et P ; voltmètre / ampèremètre ; affichage de V, I, P sur chaque composant, chaque
+  grandeur avec sa couleur. V et I sont signés par rapport à la flèche de référence du composant (flèche creuse,
+  + à la queue, − à la pointe), que l'on peut inverser (touche I) comme on choisit un sens de courant avant d'analyser
+  un circuit ; les flèches pleines montrent le sens réel (conventionnel ou électrons, selon l'option).
 - **Oscilloscope** : tracé de la tension, du courant, de la puissance ou de la résistance (V/I) de n'importe quel
   composant en fonction du temps, fenêtre réglable de 1 ms à 30 s.
 - **Interface Material 3** : composants officiels [Material Web](https://github.com/material-components/material-web)

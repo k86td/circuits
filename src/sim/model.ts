@@ -41,6 +41,11 @@ export interface Component {
   props: Record<string, PropValue>;
   /** État de l'interrupteur. */
   closed?: boolean;
+  /**
+   * Sens de référence du courant inversé : par défaut la référence va du terminal 0 vers le terminal 1
+   * (de + vers − pour les sources et appareils de mesure). V et I affichés sont signés par rapport à cette référence.
+   */
+  flipRef?: boolean;
 }
 
 export interface Wire {

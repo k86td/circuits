@@ -86,7 +86,10 @@ export interface CanvasPalette {
   wire: string;
   body: string;
   label: string;
-  reading: string;
+  /** Couleurs des grandeurs affichées : tension, courant (= flèches), puissance (= lueur des ampoules). */
+  valueV: string;
+  valueI: string;
+  valueP: string;
   meter: string;
   select: string;
   hover: string;
@@ -258,6 +261,9 @@ export class ThemeManager {
     const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
     if (meta) meta.content = this.colors.surfaceContainer;
     this.canvas = this.buildCanvasPalette();
+    root.style.setProperty("--app-color-v", this.canvas.valueV);
+    root.style.setProperty("--app-color-i", this.canvas.valueI);
+    root.style.setProperty("--app-color-p", this.canvas.valueP);
     this.listeners.forEach((fn) => fn());
   }
 
@@ -270,7 +276,9 @@ export class ThemeManager {
       wire: c.onSurfaceVariant,
       body: c.onSurface,
       label: c.onSurfaceVariant,
-      reading: c.primary,
+      valueV: c.primary,
+      valueI: c.tertiary,
+      valueP: dark ? "#fde047" : "#a16207",
       meter: c.tertiary,
       select: withAlpha(c.primary, 0.38),
       hover: withAlpha(c.primary, 0.2),

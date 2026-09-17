@@ -360,12 +360,14 @@ function setupProps(app: App): void {
     actions.className = "actions";
     const rot = makeButton("md-outlined-button", "Pivoter", "rotate_right", () => app.rotateSelection());
     rot.title = "Pivoter (R)";
+    const flip = makeButton("md-outlined-button", "Sens de réf.", "swap_horiz", () => app.flipReference(c.id));
+    flip.title = "Inverser le sens de référence du courant (I) : V et I sont signés par rapport à cette flèche";
     const dup = makeButton("md-outlined-button", "Dupliquer", "content_copy", () => app.duplicateSelection());
     dup.title = "Dupliquer (Ctrl+D)";
     const del = makeButton("md-text-button", "Supprimer", "delete", () => app.deleteSelection());
     del.className = "danger";
     del.title = "Supprimer (Suppr)";
-    actions.append(rot, dup, del);
+    actions.append(rot, flip, dup, del);
     root.appendChild(actions);
 
     // Traces
@@ -409,26 +411,29 @@ function setupProps(app: App): void {
     }
     const c = app.selectedComponent();
     if (!c || c.id !== currentId) return;
-    const r = app.sim.results.get(c.id);
-    if (!r || app.sim.error || c.type === "ground") {
+    const raw = app.sim.results.get(c.id);
+    if (!raw || app.sim.error || c.type === "ground") {
       readings.innerHTML = "";
       return;
     }
-    const rows = [
-      ["Tension", formatSI(r.v, "V")],
-      ["Courant", formatSI(r.i, "A")],
-      ["Puissance", formatSI(r.p, "W")],
+    const r = app.display(c, raw);
+    const rows: [string, string, string][] = [
+      ["Tension", formatSI(r.v, "V"), "val-v"],
+      ["Courant", formatSI(r.i, "A"), "val-i"],
+      ["Puissance absorbée", formatSI(r.p, "W"), "val-p"],
     ];
-    if (Math.abs(r.i) > 1e-12) rows.push(["V / I", formatSI(r.v / r.i, "Ω")]);
+    if (Math.abs(r.i) > 1e-12) rows.push(["V / I", formatSI(r.v / r.i, "Ω"), ""]);
     if (isDependentSource(c.type) && r.vc !== undefined && r.ic !== undefined) {
-      rows.push(["Tension de commande", formatSI(r.vc, "V")]);
-      rows.push(["Courant de commande", formatSI(r.ic, "A")]);
+      rows.push(["Tension de commande", formatSI(r.vc, "V"), "val-v"]);
+      rows.push(["Courant de commande", formatSI(r.ic, "A"), "val-i"]);
     }
     for (const p of DEFS[c.type].props) {
       const v = c.props[p.key];
-      if (typeof v === "string") rows.push([`${p.label} (t)`, formatSI(evalValue(v, app.sim.time), p.unit)]);
+      if (typeof v === "string") rows.push([`${p.label} (t)`, formatSI(evalValue(v, app.sim.time), p.unit), ""]);
     }
-    readings.innerHTML = rows.map(([k, v]) => `<div><b>${k}</b> ${v}</div>`).join("");
+    const ref = app.options.conventional ? "sens conventionnel" : "sens des électrons";
+    const note = `<div class="ref-note">Signes par rapport à la flèche de référence${c.flipRef ? " (inversée)" : ""} · ${ref}</div>`;
+    readings.innerHTML = rows.map(([k, v, cls]) => `<div><b>${k}</b> <span class="${cls}">${v}</span></div>`).join("") + note;
   };
 
   app.on("select", render);

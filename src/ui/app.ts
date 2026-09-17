@@ -18,7 +18,7 @@ import {
   terminalPositions,
 } from "../sim/model";
 import { normalizeWires } from "../sim/netlist";
-import { Simulator } from "../sim/solver";
+import { type ComponentResult, Simulator } from "../sim/solver";
 import { Scope } from "./scope";
 
 export interface Options {
@@ -201,8 +201,33 @@ export class App {
     this.sim.rebuild();
     this.sim.computeWireCurrents();
     this.scope.prune(this.circuit);
+    this.scope.flipped = new Set(this.circuit.components.filter((c) => c.flipRef).map((c) => c.id));
     this.autosave();
     this.emit("change");
+  }
+
+  /** Signe appliqué à V et I d'un composant selon son sens de référence (+1 : terminal 0 → 1, −1 : inversé). */
+  refSign(c: Component): 1 | -1 {
+    return c.flipRef ? -1 : 1;
+  }
+
+  /**
+   * Valeurs affichées d'un composant : V et I sont signés par rapport à sa flèche de référence
+   * (V = potentiel à la queue de la flèche − potentiel à la pointe) ; P est la puissance absorbée.
+   */
+  display(c: Component, r: ComponentResult): ComponentResult {
+    const s = this.refSign(c);
+    return { v: s * r.v, i: s * r.i, p: r.p, vc: r.vc, ic: r.ic };
+  }
+
+  /** Inverse le sens de référence du courant d'un composant. */
+  flipReference(id: string): void {
+    const c = this.componentById(id);
+    if (!c || c.type === "ground") return;
+    this.snapshot();
+    c.flipRef = !c.flipRef;
+    if (!c.flipRef) delete c.flipRef;
+    this.afterChange();
   }
 
   // ---- Sélection ----

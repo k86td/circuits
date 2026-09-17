@@ -105,7 +105,7 @@
             <span>Animer les électrons</span>
             <md-switch id="opt-electrons" aria-label="Animer les électrons"></md-switch>
           </label>
-          <label class="opt-row" title="Sens conventionnel (+ → −) plutôt que sens des électrons">
+          <label class="opt-row" title="Électrons, flèches et signes suivent le sens conventionnel (+ → −) plutôt que le sens réel des électrons (− → +)">
             <span>Sens conventionnel (+ → −)</span>
             <md-switch id="opt-conventional" aria-label="Sens conventionnel"></md-switch>
           </label>
@@ -205,7 +205,9 @@
         <ul>
           <li>Espace lance / arrête. La vitesse règle le rapport temps simulé / temps réel : ralentissez pour observer un RC rapide ou un signal 60 Hz.</li>
           <li>Les points colorés sont les électrons : ils vont du − vers le + (option « sens conventionnel » pour l'inverse). Leur vitesse suit le courant.</li>
-          <li>Les flèches indiquent le sens conventionnel du courant (+ → −) sur chaque fil et composant parcouru par un courant.</li>
+          <li>Les flèches pleines indiquent le sens du courant (conventionnel + → −, ou sens des électrons selon l'option) sur chaque fil et composant parcouru par un courant.</li>
+          <li><b>Signes :</b> V et I d'un composant sont signés par rapport à sa <b>flèche de référence</b> (flèche creuse, + à la queue, − à la pointe), visible sur le composant sélectionné ou avec « Afficher V, I, P ». Un courant négatif circule à l'opposé de la référence. I (ou le bouton « Sens de réf. ») inverse la référence, comme on choisit un sens de courant avant d'analyser un circuit.</li>
+          <li><b>Couleurs :</b> la tension, le courant et la puissance ont chacun leur couleur ; celle du courant est aussi celle des flèches, celle de la puissance celle des ampoules allumées.</li>
           <li>Survolez un fil ou un composant pour lire la tension, le courant et la puissance.</li>
           <li>Cochez V, I, P ou R dans les propriétés d'un composant pour tracer sa courbe dans l'oscilloscope.</li>
           <li>Une <b>masse</b> fixe la référence 0 V ; sans masse, un nœud est choisi automatiquement.</li>

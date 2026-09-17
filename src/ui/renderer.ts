@@ -577,6 +577,12 @@ export class Renderer {
     // Flèches du sens conventionnel du courant
     if (app.options.currentArrows && !sim.error) this.drawCurrentArrows(ctx);
 
+    // Sens de référence (flèche creuse + polarité) : composant sélectionné, ou tous si les mesures sont affichées
+    for (const c of app.circuit.components) {
+      const isSel = app.selection?.kind === "component" && app.selection.id === c.id;
+      if ((isSel || app.options.showReadings) && c.type !== "ground") this.drawReference(ctx, c);
+    }
+
     // Étiquettes
     this.drawLabels(ctx, view.zoom);
 
@@ -657,12 +663,14 @@ export class Renderer {
   }
 
   /**
-   * Flèches du sens conventionnel du courant (+ → −) : une par ~90 px sur les fils (les fils alignés bout à bout
+   * Flèches du sens du courant (conventionnel + → −, ou sens des électrons selon l'option) : une par ~90 px sur les fils (les fils alignés bout à bout
    * sont regroupés pour ne pas multiplier les flèches sur les petits segments), une sur la patte de chaque composant.
    */
   private drawCurrentArrows(ctx: CanvasRenderingContext2D): void {
     const app = this.app;
     const threshold = Math.max(1e-12, app.options.iRef) * 1e-4;
+    // Sens conventionnel (+ → −) ou sens des électrons (− → +), comme l'animation.
+    const conv = app.options.conventional ? 1 : -1;
     const size = 9;
     ctx.fillStyle = COL().arrow;
     ctx.strokeStyle = COL().bg;
@@ -693,9 +701,9 @@ export class Renderer {
     for (const w of app.circuit.wires) {
       if (visited.has(w.id)) continue;
       visited.add(w.id);
-      const i = app.sim.wireCurrents.get(w.id) ?? 0;
+      const i = conv * (app.sim.wireCurrents.get(w.id) ?? 0);
       if (Math.abs(i) < threshold) continue;
-      // Orientation du chemin : de `from` vers `to` dans le sens du courant conventionnel.
+      // Orientation du chemin : de `from` vers `to` dans le sens du courant (selon la convention choisie).
       let from = i > 0 ? w.a : w.b;
       let to = i > 0 ? w.b : w.a;
       const d = dirOf(from, to);
@@ -735,11 +743,61 @@ export class Renderer {
         const b = path.pts[1];
         const len = Math.hypot(b.x - a.x, b.y - a.y);
         if (len < 1) continue;
-        const sign = Math.sign(path.i);
+        const sign = conv * Math.sign(path.i);
         const t = path.pts.length === 2 ? 0.15 : 0.5;
         arrow(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, ((b.x - a.x) / len) * sign, ((b.y - a.y) / len) * sign);
       }
     }
+  }
+
+  /**
+   * Repère de référence d'un composant : flèche creuse du sens de référence du courant et polarité (+ à la queue,
+   * − à la pointe) par rapport auxquels V et I sont signés. En mode « sens des électrons », la flèche est
+   * retournée : un courant positif signifie alors des électrons circulant dans le sens de la flèche.
+   */
+  private drawReference(ctx: CanvasRenderingContext2D, c: Component): void {
+    const app = this.app;
+    const s = app.refSign(c);
+    const conv = app.options.conventional ? 1 : -1;
+    const dep = isDependentSource(c.type);
+    const rot = (c.rot * Math.PI) / 2;
+    ctx.save();
+    ctx.translate(c.pos.x * G, c.pos.y * G);
+    ctx.rotate(rot);
+    // Composant à deux terminaux : axe de référence de x = −40 (terminal 0) vers x = +40 (terminal 1), sur la patte de droite.
+    // Source dépendante : branche de sortie T0 (40,−20) → (20,−20) → (20,20) → T1 (40,20) ; repère sur le dernier segment.
+    const dir = s * conv;
+    const plus = dep ? { x: 30, y: -30 * s } : { x: -33 * s, y: 10 };
+    const minus = dep ? { x: 30, y: 30 * s } : { x: 33 * s, y: 10 };
+    const arrow = dep ? { x: 30, y: 20 } : { x: 29, y: 0 };
+    ctx.fillStyle = COL().valueV;
+    ctx.font = "bold 11px Roboto, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    // La rotation du composant ne doit pas retourner le texte : on l'annule localement.
+    const mark = (p: Vec, txt: string) => {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(-rot);
+      ctx.fillText(txt, 0, 0);
+      ctx.restore();
+    };
+    mark(plus, "+");
+    mark(minus, "−");
+    // Flèche creuse sur la patte, dans le sens de référence
+    ctx.strokeStyle = COL().valueI;
+    ctx.fillStyle = COL().bg;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    const { x, y } = arrow;
+    ctx.beginPath();
+    ctx.moveTo(x + 6 * dir, y);
+    ctx.lineTo(x - 5 * dir, y - 5);
+    ctx.lineTo(x - 5 * dir, y + 5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawElectrons(ctx: CanvasRenderingContext2D, frameDt: number): void {
@@ -803,11 +861,26 @@ export class Renderer {
     const app = this.app;
     if (zoom < 0.45) return;
     const sim = app.sim;
-    ctx.font = "11px system-ui, sans-serif";
+    ctx.font = "11px Roboto, system-ui, sans-serif";
     ctx.textBaseline = "middle";
+    type Seg = { text: string; color: string };
+    type Line = { segs: Seg[]; kind: "label" | "reading" };
+    const drawLine = (line: Line, x: number, y: number, align: CanvasTextAlign) => {
+      const widths = line.segs.map((sg) => ctx.measureText(sg.text).width);
+      const gap = 7;
+      const total = widths.reduce((a, b) => a + b, 0) + gap * (line.segs.length - 1);
+      let cx = align === "center" ? x - total / 2 : align === "right" ? x - total : x;
+      ctx.textAlign = "left";
+      line.segs.forEach((sg, k) => {
+        ctx.fillStyle = sg.color;
+        ctx.fillText(sg.text, cx, y);
+        cx += widths[k] + gap;
+      });
+    };
     for (const c of app.circuit.components) {
-      const lines: { text: string; color: string }[] = [];
-      const res = sim.results.get(c.id);
+      const lines: Line[] = [];
+      const raw = sim.results.get(c.id);
+      const res = raw ? app.display(c, raw) : undefined;
       const name = displayName(c);
       if (app.options.showValues) {
         const mv = mainValue(c);
@@ -816,16 +889,19 @@ export class Renderer {
           if (typeof mv.value === "string") vt = isTimeDependent(mv.value) ? `${mv.value}` : formatSI(evalValue(mv.value, sim.time), mv.unit);
           else vt = formatSI(mv.value, mv.unit);
           if (vt.length > 22) vt = `${vt.slice(0, 20)}…`;
-          lines.push({ text: `${name}  ${vt}`, color: COL().label });
-        } else lines.push({ text: name, color: COL().label });
+          lines.push({ segs: [{ text: `${name}  ${vt}`, color: COL().label }], kind: "label" });
+        } else lines.push({ segs: [{ text: name, color: COL().label }], kind: "label" });
       }
       if (res && !sim.error) {
-        if (c.type === "voltmeter") lines.push({ text: formatSI(res.v, "V"), color: COL().meter });
-        else if (c.type === "ammeter") lines.push({ text: formatSI(res.i, "A"), color: COL().meter });
+        if (c.type === "voltmeter") lines.push({ segs: [{ text: formatSI(res.v, "V"), color: COL().valueV }], kind: "reading" });
+        else if (c.type === "ammeter") lines.push({ segs: [{ text: formatSI(res.i, "A"), color: COL().valueI }], kind: "reading" });
         else if (app.options.showReadings && c.type !== "ground") {
-          const parts = [formatSI(res.v, "V"), formatSI(res.i, "A")];
-          if (c.type !== "switch") parts.push(formatSI(res.p, "W"));
-          lines.push({ text: parts.join("  "), color: COL().reading });
+          const segs: Seg[] = [
+            { text: formatSI(res.v, "V"), color: COL().valueV },
+            { text: formatSI(res.i, "A"), color: COL().valueI },
+          ];
+          if (c.type !== "switch") segs.push({ text: formatSI(res.p, "W"), color: COL().valueP });
+          lines.push({ segs, kind: "reading" });
         }
       }
       if (lines.length === 0) continue;
@@ -835,27 +911,16 @@ export class Renderer {
       if (horizontal) {
         // valeur au-dessus, mesures en dessous
         const x = b.x + b.w / 2;
-        ctx.textAlign = "center";
-        const above = lines.filter((l) => l.color === COL().label);
-        const below = lines.filter((l) => l.color !== COL().label);
-        above.forEach((l, k) => {
-          ctx.fillStyle = l.color;
-          ctx.fillText(l.text, x, b.y - 8 - (above.length - 1 - k) * 13);
-        });
-        below.forEach((l, k) => {
-          ctx.fillStyle = l.color;
-          ctx.fillText(l.text, x, b.y + b.h + 9 + k * 13);
-        });
+        const above = lines.filter((l) => l.kind === "label");
+        const below = lines.filter((l) => l.kind === "reading");
+        above.forEach((l, k) => drawLine(l, x, b.y - 8 - (above.length - 1 - k) * 13, "center"));
+        below.forEach((l, k) => drawLine(l, x, b.y + b.h + 9 + k * 13, "center"));
         continue;
       }
       let x: number;
       let y: number;
       let align: CanvasTextAlign;
-      if (c.type === "ground") {
-        x = b.x + b.w / 2;
-        y = b.y + b.h + 9;
-        align = "center";
-      } else if (dep) {
+      if (c.type === "ground" || dep) {
         x = b.x + b.w / 2;
         y = b.y + b.h + 9;
         align = "center";
@@ -864,11 +929,7 @@ export class Renderer {
         y = b.y + b.h / 2 - ((lines.length - 1) * 13) / 2;
         align = "left";
       }
-      ctx.textAlign = align;
-      lines.forEach((l, k) => {
-        ctx.fillStyle = l.color;
-        ctx.fillText(l.text, x, y + k * 13);
-      });
+      lines.forEach((l, k) => drawLine(l, x, y + k * 13, align));
     }
   }
 
@@ -897,8 +958,9 @@ export class Renderer {
       }
     } else if (h.kind === "component") {
       const c = app.componentById(h.id);
-      const r = app.sim.results.get(h.id);
-      if (c && r && !app.sim.error && c.type !== "ground") {
+      const raw = app.sim.results.get(h.id);
+      if (c && raw && !app.sim.error && c.type !== "ground") {
+        const r = app.display(c, raw);
         text = `${displayName(c)} : V = ${formatSI(r.v, "V")}   I = ${formatSI(r.i, "A")}   P = ${formatSI(r.p, "W")}`;
         if (r.vc !== undefined && r.ic !== undefined)
           text += `   commande : ${formatSI(r.vc, "V")} / ${formatSI(r.ic, "A")}`;

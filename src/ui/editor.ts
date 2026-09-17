@@ -386,6 +386,12 @@ export class Editor {
       case "F":
         this.zoomToFit();
         break;
+      case "i":
+      case "I": {
+        const c = this.app.selectedComponent();
+        if (c) this.app.flipReference(c.id);
+        break;
+      }
     }
   }
 

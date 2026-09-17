@@ -35,6 +35,7 @@ import rightPanelOpen from "./icons/right_panel_open.svg?raw";
 import rotateRight from "./icons/rotate_right.svg?raw";
 import shuffle from "./icons/shuffle.svg?raw";
 import speed from "./icons/speed.svg?raw";
+import swapHoriz from "./icons/swap_horiz.svg?raw";
 import timeline from "./icons/timeline.svg?raw";
 import timelineFill from "./icons/timeline-fill.svg?raw";
 import toggleOff from "./icons/toggle_off.svg?raw";
@@ -73,6 +74,7 @@ export const ICONS: Record<string, string> = {
   rotate_right: rotateRight,
   shuffle,
   speed,
+  swap_horiz: swapHoriz,
   timeline,
   "timeline-fill": timelineFill,
   toggle_off: toggleOff,

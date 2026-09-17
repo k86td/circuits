@@ -34,6 +34,8 @@ export class Scope {
   /** Largeur de la fenêtre affichée (s). */
   window = 0.1;
   capacity = 6000;
+  /** Composants dont le sens de référence est inversé (V et I échantillonnés changent de signe). */
+  flipped = new Set<string>();
   private lastSample = -Infinity;
 
   has(compId: string, q: Quantity): boolean {
@@ -94,8 +96,9 @@ export class Scope {
       const r = results.get(tr.compId);
       let v = NaN;
       if (r) {
-        if (tr.q === "v") v = r.v;
-        else if (tr.q === "i") v = r.i;
+        const s = this.flipped.has(tr.compId) ? -1 : 1;
+        if (tr.q === "v") v = s * r.v;
+        else if (tr.q === "i") v = s * r.i;
         else if (tr.q === "p") v = r.p;
         else v = Math.abs(r.i) > 1e-12 ? r.v / r.i : NaN;
       }

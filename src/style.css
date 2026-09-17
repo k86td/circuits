@@ -493,6 +493,27 @@ body.compact.overlay-open #scrim {
   font-family: var(--md-ref-typeface-plain);
 }
 
+.val-v {
+  color: var(--app-color-v, var(--md-sys-color-primary));
+}
+
+.val-i {
+  color: var(--app-color-i, var(--md-sys-color-tertiary));
+}
+
+.val-p {
+  color: var(--app-color-p, var(--md-sys-color-secondary));
+}
+
+.readings .ref-note {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--md-ref-typeface-plain);
+  font-size: 11px;
+  color: var(--md-sys-color-on-surface-variant);
+  line-height: 1.35;
+}
+
 #display-options .opt-row {
   display: flex;
   align-items: center;
