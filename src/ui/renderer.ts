@@ -11,6 +11,7 @@ import {
   mainValue,
   pointKey,
   rotateVec,
+  samePoint,
   terminalPositions,
 } from "../sim/model";
 import { connectionDegrees } from "../sim/netlist";
@@ -573,6 +574,9 @@ export class Renderer {
     // Électrons
     if (app.options.electrons && !sim.error) this.drawElectrons(ctx, extra.frameDt);
 
+    // Flèches du sens conventionnel du courant
+    if (app.options.currentArrows && !sim.error) this.drawCurrentArrows(ctx);
+
     // Étiquettes
     this.drawLabels(ctx, view.zoom);
 
@@ -637,6 +641,107 @@ export class Renderer {
     }
   }
 
+  /** Chemins parcourus par le courant (fils et composants), avec le courant conventionnel orienté le long des points. */
+  private currentPaths(): { key: string; pts: Vec[]; i: number }[] {
+    const app = this.app;
+    const paths: { key: string; pts: Vec[]; i: number }[] = [];
+    for (const w of app.circuit.wires) {
+      paths.push({ key: w.id, pts: [gridToWorld(w.a), gridToWorld(w.b)], i: app.sim.wireCurrents.get(w.id) ?? 0 });
+    }
+    for (const c of app.circuit.components) {
+      const r = app.sim.results.get(c.id);
+      if (!r) continue;
+      conductionPaths(c, r.i, r.ic).forEach((p, k) => paths.push({ key: `${c.id}#${k}`, pts: p.pts, i: p.i }));
+    }
+    return paths;
+  }
+
+  /**
+   * Flèches du sens conventionnel du courant (+ → −) : une par ~90 px sur les fils (les fils alignés bout à bout
+   * sont regroupés pour ne pas multiplier les flèches sur les petits segments), une sur la patte de chaque composant.
+   */
+  private drawCurrentArrows(ctx: CanvasRenderingContext2D): void {
+    const app = this.app;
+    const threshold = Math.max(1e-12, app.options.iRef) * 1e-4;
+    const size = 9;
+    ctx.fillStyle = COL().arrow;
+    ctx.strokeStyle = COL().bg;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    const arrow = (cx: number, cy: number, ux: number, uy: number) => {
+      ctx.beginPath();
+      ctx.moveTo(cx + ux * size * 0.6, cy + uy * size * 0.6);
+      ctx.lineTo(cx - ux * size * 0.4 - uy * size * 0.5, cy - uy * size * 0.4 + ux * size * 0.5);
+      ctx.lineTo(cx - ux * size * 0.4 + uy * size * 0.5, cy - uy * size * 0.4 - ux * size * 0.5);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.fill();
+    };
+
+    // Fils : regroupement des segments alignés reliés par un simple point de passage (degré 2).
+    const deg = connectionDegrees(app.circuit);
+    const atPoint = new Map<string, typeof app.circuit.wires>();
+    for (const w of app.circuit.wires) {
+      for (const p of [w.a, w.b]) {
+        const k = pointKey(p);
+        if (!atPoint.has(k)) atPoint.set(k, []);
+        atPoint.get(k)!.push(w);
+      }
+    }
+    const dirOf = (a: Vec, b: Vec) => ({ x: Math.sign(b.x - a.x), y: Math.sign(b.y - a.y) });
+    const visited = new Set<string>();
+    for (const w of app.circuit.wires) {
+      if (visited.has(w.id)) continue;
+      visited.add(w.id);
+      const i = app.sim.wireCurrents.get(w.id) ?? 0;
+      if (Math.abs(i) < threshold) continue;
+      // Orientation du chemin : de `from` vers `to` dans le sens du courant conventionnel.
+      let from = i > 0 ? w.a : w.b;
+      let to = i > 0 ? w.b : w.a;
+      const d = dirOf(from, to);
+      // Prolonge dans les deux sens tant que le fil suivant est aligné et seul au point de jonction.
+      const extend = (p: Vec, forward: boolean): Vec => {
+        for (;;) {
+          if ((deg.get(pointKey(p)) ?? 0) !== 2) return p;
+          const next = (atPoint.get(pointKey(p)) ?? []).find((x) => !visited.has(x.id));
+          if (!next) return p;
+          const far = samePoint(next.a, p) ? next.b : next.a;
+          const nd = forward ? dirOf(p, far) : dirOf(far, p);
+          if (nd.x !== d.x || nd.y !== d.y) return p;
+          visited.add(next.id);
+          p = far;
+        }
+      };
+      to = extend(to, true);
+      from = extend(from, false);
+      const a = gridToWorld(from);
+      const b = gridToWorld(to);
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (len < 24) continue;
+      const n = Math.max(1, Math.round(len / 90));
+      for (let j = 1; j <= n; j++) {
+        const t = j / (n + 1);
+        arrow(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, d.x, d.y);
+      }
+    }
+
+    // Composants : une flèche sur la première patte (hors du symbole).
+    for (const c of app.circuit.components) {
+      const r = app.sim.results.get(c.id);
+      if (!r) continue;
+      for (const path of conductionPaths(c, r.i, r.ic)) {
+        if (Math.abs(path.i) < threshold) continue;
+        const a = path.pts[0];
+        const b = path.pts[1];
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        if (len < 1) continue;
+        const sign = Math.sign(path.i);
+        const t = path.pts.length === 2 ? 0.15 : 0.5;
+        arrow(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, ((b.x - a.x) / len) * sign, ((b.y - a.y) / len) * sign);
+      }
+    }
+  }
+
   private drawElectrons(ctx: CanvasRenderingContext2D, frameDt: number): void {
     const app = this.app;
     const spacing = 14;
@@ -653,15 +758,7 @@ export class Renderer {
     };
     // Déplacement maximal par image, pour qu'un point ne saute jamais plus du tiers de l'espacement
     const maxStep = spacing * 0.35;
-    const paths: { key: string; pts: Vec[]; i: number }[] = [];
-    for (const w of app.circuit.wires) {
-      paths.push({ key: w.id, pts: [gridToWorld(w.a), gridToWorld(w.b)], i: app.sim.wireCurrents.get(w.id) ?? 0 });
-    }
-    for (const c of app.circuit.components) {
-      const r = app.sim.results.get(c.id);
-      if (!r) continue;
-      conductionPaths(c, r.i, r.ic).forEach((p, k) => paths.push({ key: `${c.id}#${k}`, pts: p.pts, i: p.i }));
-    }
+    const paths = this.currentPaths();
     const color = app.options.conventional ? COL().electronConv : COL().electron;
     ctx.fillStyle = color;
     const alive = new Set<string>();

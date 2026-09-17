@@ -109,6 +109,10 @@
             <span>Sens conventionnel (+ → −)</span>
             <md-switch id="opt-conventional" aria-label="Sens conventionnel"></md-switch>
           </label>
+          <label class="opt-row" title="Flèches indiquant le sens conventionnel du courant (+ → −) sur les fils et les composants">
+            <span>Flèches du sens du courant</span>
+            <md-switch id="opt-arrows" aria-label="Flèches du sens du courant"></md-switch>
+          </label>
           <label class="opt-row" title="Colorer les fils selon la tension (rouge +, bleu −)">
             <span>Colorer les fils selon la tension</span>
             <md-switch id="opt-colors" aria-label="Colorer les fils selon la tension"></md-switch>
@@ -201,6 +205,7 @@
         <ul>
           <li>Espace lance / arrête. La vitesse règle le rapport temps simulé / temps réel : ralentissez pour observer un RC rapide ou un signal 60 Hz.</li>
           <li>Les points colorés sont les électrons : ils vont du − vers le + (option « sens conventionnel » pour l'inverse). Leur vitesse suit le courant.</li>
+          <li>Les flèches indiquent le sens conventionnel du courant (+ → −) sur chaque fil et composant parcouru par un courant.</li>
           <li>Survolez un fil ou un composant pour lire la tension, le courant et la puissance.</li>
           <li>Cochez V, I, P ou R dans les propriétés d'un composant pour tracer sa courbe dans l'oscilloscope.</li>
           <li>Une <b>masse</b> fixe la référence 0 V ; sans masse, un nœud est choisi automatiquement.</li>

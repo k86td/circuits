@@ -26,6 +26,8 @@ export interface Options {
   /** true : sens conventionnel (+ vers −) ; false : sens réel des électrons. */
   conventional: boolean;
   voltageColors: boolean;
+  /** Flèches indiquant le sens conventionnel du courant sur les fils et les composants. */
+  currentArrows: boolean;
   showValues: boolean;
   showReadings: boolean;
   /** Courant de référence pour la vitesse des électrons (A). */
@@ -54,6 +56,7 @@ export class App {
     electrons: true,
     conventional: false,
     voltageColors: true,
+    currentArrows: true,
     showValues: true,
     showReadings: false,
     iRef: 5e-3,

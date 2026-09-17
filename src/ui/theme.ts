@@ -92,6 +92,7 @@ export interface CanvasPalette {
   hover: string;
   electron: string;
   electronConv: string;
+  arrow: string;
   unconnected: string;
   voltageNeutral: string;
   voltagePos: string;
@@ -275,6 +276,7 @@ export class ThemeManager {
       hover: withAlpha(c.primary, 0.2),
       electron: c.primary,
       electronConv: c.tertiary,
+      arrow: c.tertiary,
       unconnected: withAlpha(c.error, 0.85),
       voltageNeutral: c.outline,
       voltagePos: dark ? "#f87171" : "#dc2626",

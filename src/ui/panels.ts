@@ -217,13 +217,17 @@ function setupToolbar(app: App, editor: Editor): void {
 // ---------------- Options d'affichage ----------------
 
 function setupDisplayOptions(app: App): void {
-  const bind = (id: string, key: "electrons" | "conventional" | "voltageColors" | "showValues" | "showReadings") => {
+  const bind = (id: string, key: "electrons" | "conventional" | "voltageColors" | "currentArrows" | "showValues" | "showReadings") => {
     const el = $<MdSwitch>(id);
     el.selected = app.options[key];
     el.addEventListener("change", () => app.setOptions({ [key]: el.selected }));
+    app.on("options", () => {
+      el.selected = app.options[key];
+    });
   };
   bind("#opt-electrons", "electrons");
   bind("#opt-conventional", "conventional");
+  bind("#opt-arrows", "currentArrows");
   bind("#opt-colors", "voltageColors");
   bind("#opt-values", "showValues");
   bind("#opt-readings", "showReadings");
