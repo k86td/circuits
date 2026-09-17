@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Circuits — simulateur interactif</title>
+  </head>
+  <body>
+    <header id="toolbar">
+      <div class="brand">⚡ Circuits</div>
+      <div class="group">
+        <button id="btn-play" title="Lancer / mettre en pause (Espace)">▶ Simuler</button>
+        <button id="btn-reset" title="Remettre le temps à zéro et décharger les condensateurs">⟲ t = 0</button>
+        <label class="slider" title="Vitesse de la simulation (temps simulé / temps réel)">
+          <span>Vitesse</span>
+          <input id="speed" type="range" />
+          <span id="speed-label" class="mono">×1</span>
+        </label>
+      </div>
+      <div class="group">
+        <button id="tool-select" title="Sélection / déplacement (V)">↖ Sélection</button>
+        <button id="tool-wire" title="Tracer des fils (W)">╱ Fil</button>
+        <button id="btn-undo" title="Annuler (Ctrl+Z)">↶</button>
+        <button id="btn-redo" title="Rétablir (Ctrl+Y)">↷</button>
+        <button id="btn-fit" title="Ajuster la vue (F)">⤢</button>
+      </div>
+      <div class="group">
+        <select id="examples" title="Charger un circuit d'exemple">
+          <option value="">Exemples…</option>
+        </select>
+        <button id="btn-save" title="Enregistrer le circuit (JSON)">💾</button>
+        <button id="btn-load" title="Ouvrir un circuit (JSON)">📂</button>
+        <input id="file-input" type="file" accept=".json,application/json" hidden />
+        <button id="btn-clear" title="Effacer tout">🗑</button>
+        <button id="btn-help" title="Aide">?</button>
+      </div>
+    </header>
+
+    <main>
+      <aside id="palette-panel">
+        <div class="panel-title">Composants</div>
+        <div id="palette"></div>
+      </aside>
+
+      <section id="workspace">
+        <canvas id="canvas" tabindex="0"></canvas>
+        <div id="status"></div>
+      </section>
+
+      <aside id="right">
+        <div id="props"></div>
+        <div id="display-options">
+          <div class="panel-title">Affichage</div>
+          <label><input type="checkbox" id="opt-electrons" /> Animer les électrons</label>
+          <label><input type="checkbox" id="opt-conventional" /> Sens conventionnel (+ → −) plutôt que sens des électrons</label>
+          <label><input type="checkbox" id="opt-colors" /> Colorer les fils selon la tension (rouge +, bleu −)</label>
+          <label><input type="checkbox" id="opt-values" /> Afficher les valeurs</label>
+          <label><input type="checkbox" id="opt-readings" /> Afficher V, I, P sur chaque composant</label>
+          <label class="slider" title="Courant de référence : la vitesse des électrons suit une échelle logarithmique plafonnée (iRef/1000 → lent, iRef → moyen, 100×iRef et plus → vitesse maximale)">
+            <span>Échelle des électrons (courant de référence)</span>
+            <input id="opt-iref" type="range" />
+            <span id="opt-iref-label" class="mono"></span>
+          </label>
+        </div>
+      </aside>
+    </main>
+
+    <footer id="scope-panel">
+      <div class="scope-bar">
+        <button id="scope-toggle">▼ Oscilloscope</button>
+        <label>Fenêtre <select id="scope-window"></select></label>
+        <button id="scope-clear">Effacer les traces</button>
+      </div>
+      <canvas id="scope"></canvas>
+    </footer>
+
+    <dialog id="help">
+      <h2>Aide</h2>
+      <h3>Construire un circuit</h3>
+      <ul>
+        <li><b>Ajouter un composant :</b> glissez-le depuis la palette, ou cliquez-le puis cliquez sur le canevas (R pour pivoter avant de poser, Maj pour en poser plusieurs).</li>
+        <li><b>Relier :</b> glissez depuis un terminal (petit cercle rouge = non connecté) jusqu'à un autre terminal ou point de grille. Un fil qui touche un terminal ou l'extrémité d'un autre fil est connecté.</li>
+        <li><b>Outil Fil (W) :</b> glissez n'importe où pour tracer un fil.</li>
+        <li><b>Modifier :</b> cliquez un composant pour voir ses propriétés. Double-clic pour éditer sa valeur. R pivote, Suppr efface, Ctrl+D duplique, Ctrl+Z annule.</li>
+        <li><b>Interrupteur :</b> cliquez dessus pour l'ouvrir / le fermer.</li>
+        <li><b>Vue :</b> molette pour zoomer, glisser le fond pour déplacer, F pour ajuster.</li>
+      </ul>
+      <h3>Simuler</h3>
+      <ul>
+        <li>Espace lance / arrête. La vitesse règle le rapport temps simulé / temps réel : ralentissez pour observer un RC rapide ou un signal 60 Hz.</li>
+        <li>Les points bleus sont les électrons : ils vont du − vers le + (option « sens conventionnel » pour l'inverse). Leur vitesse suit le courant.</li>
+        <li>Survolez un fil ou un composant pour lire la tension, le courant et la puissance.</li>
+        <li>Cochez V, I, P ou R dans les propriétés d'un composant pour tracer sa courbe dans l'oscilloscope.</li>
+        <li>Une <b>masse</b> fixe la référence 0 V ; sans masse, un nœud est choisi automatiquement.</li>
+      </ul>
+      <h3>Valeurs et fonctions du temps</h3>
+      <p>Tous les champs acceptent un nombre avec préfixe SI (<code>4.7k</code>, <code>100u</code>, <code>2.2M</code>) ou une expression de <code>t</code> :</p>
+      <pre id="expr-help"></pre>
+      <h3>Sources dépendantes</h3>
+      <p>Les terminaux de gauche sont la commande (tension mesurée entre + et −, ou courant traversant le court-circuit de commande). Le losange de droite est la sortie : E·v, G·v, H·i ou F·i.</p>
+      <form method="dialog"><button>Fermer</button></form>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
