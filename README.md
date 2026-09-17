@@ -30,7 +30,7 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
 - **Oscilloscope** : tracé de la tension, du courant, de la puissance ou de la résistance (V/I) de n'importe quel
   composant en fonction du temps, fenêtre réglable de 1 ms à 30 s.
 - **Interface Material 3** : composants officiels [Material Web](https://github.com/material-components/material-web)
-  (boutons, curseurs, champs, dialogues, menus, interrupteurs) et icônes Material Symbols embarquées en SVG.
+  (boutons, curseurs, champs, dialogues, menus, interrupteurs) et icônes Material Symbols copiées en SVG dans le dépôt.
 - **Thème dynamique (Material You)** : le schéma de couleurs complet est généré avec
   `@material/material-color-utilities` à partir d'une couleur source (préréglages, couleur personnalisée ou aléatoire),
   d'un style (tonal, vif, expressif, neutre, monochrome…), d'un niveau de contraste et du mode clair / sombre /
@@ -59,7 +59,7 @@ src/ui/scope.ts      oscilloscope
 src/ui/theme.ts      thème dynamique Material 3 (couleur source → variables --md-sys-color-*, palette canvas)
 src/ui/layout.ts     panneaux masquables (état mémorisé, mode compact)
 src/ui/material.ts   enregistrement des composants @material/web
-src/ui/icons.ts      icônes Material Symbols (SVG embarqués)
+src/ui/icons.ts      icônes Material Symbols (SVG dans src/ui/icons/)
 src/ui/dom.ts        utilitaires DOM (sélecteur, filtrage des raccourcis, snackbar)
 ```
 
