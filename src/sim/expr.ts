@@ -1,10 +1,25 @@
 /**
- * Petit évaluateur d'expressions mathématiques de la variable t (temps en secondes).
- * Exemples : "5*sin(2*pi*60*t)", "step(t-1e-3)*12", "pulse(t, 1m, 0.5)*5", "1k + 500*sin(2*pi*t)".
- * Les nombres acceptent les préfixes SI (1k, 100u, 2.2M, 1meg).
+ * Petit évaluateur d'expressions mathématiques de la variable t (temps en secondes) et des grandeurs d'autres
+ * composants du circuit : i_R1 (courant dans R1), v_R1 (tension aux bornes de R1).
+ * Exemples : "5*sin(2*pi*60*t)", "step(t-1e-3)*12", "pulse(t, 1m, 0.5)*5", "2*i_R1", "0.5 v_R2 + 1".
+ * Les nombres acceptent les préfixes SI (1k, 100u, 2.2M, 1meg) ; la multiplication implicite est acceptée (2 i_R1).
  */
 
-export type TimeFn = (t: number) => number;
+/** Grandeur d'un autre composant référencée par une expression. */
+export interface QuantityRef {
+  kind: "i" | "v";
+  name: string;
+}
+
+/** Fournit la valeur d'une grandeur référencée (courant ou tension d'un composant nommé). */
+export type QuantityCtx = (kind: "i" | "v", name: string) => number;
+
+export type TimeFn = (t: number, ctx?: QuantityCtx) => number;
+
+export interface CompiledExpr extends TimeFn {
+  /** Grandeurs d'autres composants utilisées par l'expression (sans doublon). */
+  refs: QuantityRef[];
+}
 
 type Tok =
   | { k: "num"; v: number }
@@ -136,12 +151,15 @@ export const EXPR_HELP = [
   "Fonctions : sin cos tan exp ln log10 sqrt abs sign floor min max pow mod",
   "step(x) échelon · pulse(t, T, duty) · square(t, f) · tri(t, f) · saw(t, f) · ramp(x) · expdecay(t, tau)",
   "Exemples : 5*sin(2*pi*60*t) · 12*step(t-2m) · 5*pulse(t, 10m, 0.25) · 1k+500*sin(2*pi*t)",
+  "Grandeurs d'autres composants : i_R1 (courant dans R1, dans le sens de sa flèche de référence), v_R1 (tension V+ − V−).",
+  "Multiplication implicite acceptée : 2 i_R1 = 2*i_R1. Exemples : 2*i_R1 · 0.5 v_R2 + 1 · 100*i_R1^2",
 ];
 
-type Node = (t: number) => number;
+type Node = (t: number, ctx?: QuantityCtx) => number;
 
 class Parser {
   private pos = 0;
+  readonly refs: QuantityRef[] = [];
   constructor(private toks: Tok[]) {}
 
   private peek(): Tok {
@@ -165,7 +183,7 @@ class Parser {
         this.next();
         const right = this.term();
         const l = left;
-        left = t.v === "+" ? (x) => l(x) + right(x) : (x) => l(x) - right(x);
+        left = t.v === "+" ? (x, c) => l(x, c) + right(x, c) : (x, c) => l(x, c) - right(x, c);
       } else return left;
     }
   }
@@ -178,9 +196,14 @@ class Parser {
         this.next();
         const right = this.unary();
         const l = left;
-        if (t.v === "*") left = (x) => l(x) * right(x);
-        else if (t.v === "/") left = (x) => l(x) / right(x);
-        else left = (x) => FUNCS.mod(l(x), right(x));
+        if (t.v === "*") left = (x, c) => l(x, c) * right(x, c);
+        else if (t.v === "/") left = (x, c) => l(x, c) / right(x, c);
+        else left = (x, c) => FUNCS.mod(l(x, c), right(x, c));
+      } else if (t.k === "id" || t.k === "num" || t.k === "(") {
+        // multiplication implicite : 2 i_R1, 3 sin(t), 2(t+1)
+        const right = this.unary();
+        const l = left;
+        left = (x, c) => l(x, c) * right(x, c);
       } else return left;
     }
   }
@@ -190,7 +213,7 @@ class Parser {
     if (t.k === "op" && t.v === "-") {
       this.next();
       const u = this.unary();
-      return (x) => -u(x);
+      return (x, c) => -u(x, c);
     }
     if (t.k === "op" && t.v === "+") {
       this.next();
@@ -205,7 +228,7 @@ class Parser {
     if (t.k === "op" && t.v === "^") {
       this.next();
       const exp = this.unary();
-      return (x) => Math.pow(base(x), exp(x));
+      return (x, c) => Math.pow(base(x, c), exp(x, c));
     }
     return base;
   }
@@ -238,12 +261,19 @@ class Parser {
           }
         }
         if (this.next().k !== ")") throw new Error(`Parenthèse fermante manquante après ${t.v}(`);
-        return (x) => fn(...args.map((a) => a(x)));
+        return (x, c) => fn(...args.map((a) => a(x, c)));
       }
       if (t.v === "t") return (x) => x;
       if (t.v in CONSTS) {
         const v = CONSTS[t.v];
         return () => v;
+      }
+      const ref = /^([iIvV])_(.+)$/.exec(t.v);
+      if (ref) {
+        const kind = ref[1].toLowerCase() as "i" | "v";
+        const name = ref[2];
+        if (!this.refs.some((r) => r.kind === kind && r.name === name)) this.refs.push({ kind, name });
+        return (_x, c) => c?.(kind, name) ?? 0;
       }
       throw new Error(`Identifiant inconnu : ${t.v}`);
     }
@@ -251,18 +281,31 @@ class Parser {
   }
 }
 
-const cache = new Map<string, TimeFn>();
+const cache = new Map<string, CompiledExpr>();
 
 /** Compile une expression. Lance une Error avec un message lisible si invalide. */
-export function compileExpr(src: string): TimeFn {
+export function compileExpr(src: string): CompiledExpr {
   const key = src.trim();
   const hit = cache.get(key);
   if (hit) return hit;
-  const fn = new Parser(tokenize(key)).parse();
-  const probe = fn(0);
+  const parser = new Parser(tokenize(key));
+  const node = parser.parse();
+  const probe = node(0);
   if (Number.isNaN(probe)) throw new Error("L'expression ne donne pas un nombre");
+  const fn = node as CompiledExpr;
+  fn.refs = parser.refs;
   cache.set(key, fn);
   return fn;
+}
+
+/** Grandeurs d'autres composants référencées par une valeur (vide pour un nombre ou une expression invalide). */
+export function exprRefs(v: number | string): QuantityRef[] {
+  if (typeof v !== "string") return [];
+  try {
+    return compileExpr(v).refs;
+  } catch {
+    return [];
+  }
 }
 
 /** true si l'expression est valide. */
@@ -275,17 +318,17 @@ export function isValidExpr(src: string): boolean {
   }
 }
 
-/** Évalue une valeur de propriété (nombre ou expression) à l'instant t. */
-export function evalValue(v: number | string, t: number): number {
+/** Évalue une valeur de propriété (nombre ou expression) à l'instant t, avec les grandeurs du circuit si fournies. */
+export function evalValue(v: number | string, t: number, ctx?: QuantityCtx): number {
   if (typeof v === "number") return v;
   try {
-    return compileExpr(v)(t);
+    return compileExpr(v)(t, ctx);
   } catch {
     return NaN;
   }
 }
 
-/** true si la valeur dépend de t. */
+/** true si la valeur dépend de t ou de grandeurs d'autres composants (elle varie pendant la simulation). */
 export function isTimeDependent(v: number | string): boolean {
-  return typeof v === "string" && /\bt\b/.test(v);
+  return typeof v === "string" && (/\bt\b/.test(v) || exprRefs(v).length > 0);
 }

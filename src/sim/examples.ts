@@ -6,7 +6,7 @@ import { normalizeWires } from "./netlist";
 class Builder {
   circuit: Circuit = { components: [], wires: [] };
 
-  add(type: ComponentType, x: number, y: number, rot: Rot = 0, props: Record<string, number> = {}, closed?: boolean) {
+  add(type: ComponentType, x: number, y: number, rot: Rot = 0, props: Record<string, number | string> = {}, closed?: boolean) {
     const c = createComponent(type, { x, y }, rot);
     c.name = autoName(this.circuit, type);
     Object.assign(c.props, props);
@@ -125,6 +125,24 @@ export const EXAMPLES: Example[] = [
       b.path([8, 0], [10, 0]);
       b.path([14, 0], [16, 0], [16, 1]);
       b.path([16, 5], [16, 6], [0, 6], [0, 5]);
+      return b.done();
+    },
+  },
+  {
+    id: "expr",
+    name: "Source commandée par expression (v = 2000·i_R1)",
+    build: () => {
+      const b = new Builder();
+      b.add("battery", 0, 3, 1, { V: 10 });
+      b.add("resistor", 4, 0, 0, { R: 1000 });
+      b.add("ground", 3, 7);
+      b.path([0, 1], [0, 0], [2, 0]);
+      b.path([6, 0], [8, 0], [8, 6], [0, 6], [0, 5]);
+      b.add("vexpr", 12, 3, 1, { V: "2000*i_R1" });
+      b.add("resistor", 16, 0, 0, { R: 2000 });
+      b.add("ground", 15, 7);
+      b.path([12, 1], [12, 0], [14, 0]);
+      b.path([18, 0], [20, 0], [20, 6], [12, 6], [12, 5]);
       return b.done();
     },
   },

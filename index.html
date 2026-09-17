@@ -217,6 +217,7 @@
         <pre id="expr-help"></pre>
         <h3>Sources dépendantes</h3>
         <p>Les terminaux de gauche sont la commande (tension mesurée entre + et −, ou courant traversant le court-circuit de commande). Le losange de droite est la sortie : E·v, G·v, H·i ou F·i.</p>
+        <p>Les sources <b>v = f(i, v)</b> et <b>i = f(i, v)</b> (losange à deux terminaux) n'ont pas de fils de commande : leur valeur est une expression des grandeurs d'autres composants, par exemple <code>2*i_R1</code> (le double du courant dans R1), <code>0.5 v_R2 + 1</code> ou <code>100*i_R1^2</code>. <code>i_R1</code> est le courant dans le sens de la flèche de référence de R1, <code>v_R1</code> la tension (+ − −) par rapport à cette référence. Toute valeur de composant accepte ces expressions.</p>
       </div>
       <div slot="actions">
         <md-filled-tonal-button data-close="ok">Fermer</md-filled-tonal-button>

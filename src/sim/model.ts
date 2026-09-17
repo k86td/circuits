@@ -17,6 +17,8 @@ export type ComponentType =
   | "vccs"
   | "ccvs"
   | "cccs"
+  | "vexpr"
+  | "iexpr"
   | "resistor"
   | "capacitor"
   | "inductor"
@@ -191,6 +193,27 @@ export const DEFS: Record<ComponentType, ComponentDef> = {
     description: "i_sortie = F · i_commande. La commande est un court-circuit (à brancher en série).",
     category: "dependent",
   },
+  vexpr: {
+    type: "vexpr",
+    label: "Source de tension commandée par expression",
+    short: "E",
+    terminals: TWO,
+    terminalNames: ["+", "−"],
+    props: [{ key: "V", label: "v = f(t, i_X, v_X)", unit: "V", default: "2*i_R1" }],
+    description:
+      "Tension définie par une expression des grandeurs d'autres composants : 2*i_R1 (courant dans R1), 0.5*v_R2, 100*i_R1^2… Source dépendante sans fils de commande.",
+    category: "dependent",
+  },
+  iexpr: {
+    type: "iexpr",
+    label: "Source de courant commandée par expression",
+    short: "F",
+    terminals: TWO,
+    props: [{ key: "I", label: "i = f(t, i_X, v_X)", unit: "A", default: "0.5*i_R1" }],
+    description:
+      "Courant (sortant par la pointe de la flèche) défini par une expression des grandeurs d'autres composants : 0.5*i_R1, 10m*v_R2… Source dépendante sans fils de commande.",
+    category: "dependent",
+  },
   resistor: {
     type: "resistor",
     label: "Résistance",
@@ -308,6 +331,8 @@ export const PALETTE_ORDER: ComponentType[] = [
   "vccs",
   "ccvs",
   "cccs",
+  "vexpr",
+  "iexpr",
   "resistor",
   "capacitor",
   "inductor",
@@ -397,11 +422,13 @@ export function mainValue(c: Component): { value: PropValue; unit: string } | nu
   switch (c.type) {
     case "battery":
     case "vfunc":
+    case "vexpr":
       return { value: c.props.V, unit: "V" };
     case "acsource":
       return { value: c.props.A, unit: "V" };
     case "currentsource":
     case "ifunc":
+    case "iexpr":
       return { value: c.props.I, unit: "A" };
     case "vcvs":
     case "vccs":

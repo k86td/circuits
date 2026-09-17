@@ -17,7 +17,8 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
 ## Fonctionnalités
 
 - **Composants** : pile (CC), source CA, source v(t) / i(t) définie par une fonction du temps, source de courant,
-  sources dépendantes (VCVS, VCCS, CCVS, CCCS), résistance, condensateur, bobine, diode, DEL, ampoule,
+  sources dépendantes (VCVS, VCCS, CCVS, CCCS, et sources v = f(i, v) / i = f(i, v) définies par une expression
+  des grandeurs d'autres composants, par exemple `2*i_R1`), résistance, condensateur, bobine, diode, DEL, ampoule,
   interrupteur, masse, voltmètre, ampèremètre.
 - **Édition** : glisser-déposer depuis la palette, fils tirés depuis les terminaux, rotation (R), duplication (Ctrl+D),
   suppression (Suppr), annuler / rétablir (Ctrl+Z / Ctrl+Y), zoom à la molette, sauvegarde automatique et export JSON.
@@ -45,6 +46,10 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
 - **Fonctions du temps** : tout champ accepte un nombre avec préfixe SI (`4.7k`, `100u`) ou une expression de `t`,
   par exemple `5*sin(2*pi*60*t)`, `12*step(t-2m)`, `5*pulse(t, 10m, 0.25)`, `1k+500*sin(2*pi*t)`.
   Fonctions disponibles : `sin cos tan exp ln log10 sqrt abs sign floor min max pow mod step pulse square tri saw ramp expdecay`.
+  Les grandeurs d'autres composants sont accessibles par `i_R1` (courant, sens de la flèche de référence) et `v_R1`
+  (tension) ; la multiplication implicite est acceptée (`2 i_R1`). Le solveur linéarise ces dépendances à chaque
+  itération de Newton (dérivées numériques), ce qui résout exactement les expressions linéaires en une passe et fait
+  converger les non linéaires.
 
 ## Organisation du code
 

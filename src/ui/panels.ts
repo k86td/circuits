@@ -1,7 +1,7 @@
 /** Palette, barre d'outils, panneau de propriétés, oscilloscope et dialogue de thème (DOM, composants Material 3). */
 
 import { EXAMPLES } from "../sim/examples";
-import { EXPR_HELP, evalValue, isValidExpr } from "../sim/expr";
+import { EXPR_HELP, evalValue, exprRefs, isValidExpr } from "../sim/expr";
 import { type ComponentType, DEFS, PALETTE_ORDER, displayName, isDependentSource } from "../sim/model";
 import { formatSI, parseSI } from "../sim/units";
 import type { App } from "./app";
@@ -32,6 +32,8 @@ const PALETTE_NAMES: Record<ComponentType, string> = {
   vccs: "VCCS  G·v",
   ccvs: "CCVS  H·i",
   cccs: "CCCS  F·i",
+  vexpr: "Source v = f(i, v)",
+  iexpr: "Source i = f(i, v)",
   resistor: "Résistance",
   capacitor: "Condensateur",
   inductor: "Bobine",
@@ -297,6 +299,18 @@ function setupProps(app: App): void {
     desc.textContent = def.description;
     root.appendChild(desc);
 
+    // Grandeurs des autres composants utilisables dans les expressions
+    const others = app.circuit.components.filter((o) => o.id !== c.id && o.type !== "ground").map(displayName);
+    if (others.length > 0 && def.props.length > 0) {
+      const refs = document.createElement("p");
+      refs.className = "hint";
+      refs.textContent = `Dans une expression : t, ${others
+        .slice(0, 6)
+        .map((n) => `i_${n}, v_${n}`)
+        .join(", ")}${others.length > 6 ? ", …" : ""} (ex. 2*i_${others[0]}).`;
+      root.appendChild(refs);
+    }
+
     const fields = document.createElement("div");
     fields.className = "fields";
     root.appendChild(fields);
@@ -333,7 +347,9 @@ function setupProps(app: App): void {
           setError("");
           if (current !== num) app.setProp(c.id, p.key, num);
         } else if (isValidExpr(text)) {
-          setError("");
+          const names = new Set(app.circuit.components.map(displayName));
+          const unknown = exprRefs(text).filter((r) => !names.has(r.name)).map((r) => r.name);
+          setError(unknown.length > 0 ? `Composant introuvable : ${[...new Set(unknown)].join(", ")} (vaut 0)` : "");
           if (current !== text) app.setProp(c.id, p.key, text);
         } else {
           setError("Valeur ou expression invalide");
@@ -429,7 +445,7 @@ function setupProps(app: App): void {
     }
     for (const p of DEFS[c.type].props) {
       const v = c.props[p.key];
-      if (typeof v === "string") rows.push([`${p.label} (t)`, formatSI(evalValue(v, app.sim.time), p.unit), ""]);
+      if (typeof v === "string") rows.push([`${p.label} (t)`, formatSI(evalValue(v, app.sim.time, app.sim.refValue), p.unit), ""]);
     }
     const ref = app.options.conventional ? "sens conventionnel" : "sens des électrons";
     const note = `<div class="ref-note">Signes par rapport à la flèche de référence${c.flipRef ? " (inversée)" : ""} · ${ref}</div>`;

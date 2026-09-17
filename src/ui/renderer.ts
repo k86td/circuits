@@ -301,6 +301,40 @@ export function drawSymbol(
       }
       break;
     }
+    case "vexpr":
+    case "iexpr": {
+      // Source dépendante à deux terminaux : losange, valeur donnée par une expression
+      lead(-40, 0, -14, 0, lc[0]);
+      lead(14, 0, 40, 0, lc[1]);
+      ctx.fillStyle = COL().bg;
+      ctx.beginPath();
+      ctx.moveTo(-14, 0);
+      ctx.lineTo(0, -14);
+      ctx.lineTo(14, 0);
+      ctx.lineTo(0, 14);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = COL().body;
+      if (c.type === "vexpr") {
+        plus(ctx, -22, -10);
+        ctx.beginPath();
+        ctx.moveTo(19, -10);
+        ctx.lineTo(25, -10);
+        ctx.stroke();
+        text(ctx, "ƒ", 0, 0, 11, c.rot);
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(-7, 0);
+        ctx.lineTo(7, 0);
+        ctx.moveTo(2, -5);
+        ctx.lineTo(7, 0);
+        ctx.lineTo(2, 5);
+        ctx.stroke();
+        text(ctx, "ƒ", 0, -21, 9, c.rot);
+      }
+      break;
+    }
     case "diode":
     case "led": {
       lead(-40, 0, -10, 0, lc[0]);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compileExpr, evalValue } from "./expr";
+import { compileExpr, evalValue, exprRefs, isTimeDependent } from "./expr";
 
 describe("compileExpr", () => {
   it("évalue des expressions de t", () => {
@@ -25,5 +25,29 @@ describe("compileExpr", () => {
     expect(evalValue(3, 10)).toBe(3);
     expect(evalValue("t*2", 10)).toBe(20);
     expect(evalValue("??", 10)).toBeNaN();
+  });
+});
+
+describe("références à d'autres composants", () => {
+  it("évalue i_X et v_X avec un contexte et les expose dans refs", () => {
+    const ctx = (kind: "i" | "v", name: string) => (kind === "i" && name === "R1" ? 3 : kind === "v" && name === "R2" ? 4 : 0);
+    const f = compileExpr("2*i_R1 + v_R2");
+    expect(f(0, ctx)).toBeCloseTo(10, 12);
+    expect(f(0)).toBe(0);
+    expect(f.refs).toEqual([
+      { kind: "i", name: "R1" },
+      { kind: "v", name: "R2" },
+    ]);
+    expect(exprRefs("2*i_R1 + i_R1")).toHaveLength(1);
+    expect(exprRefs(5)).toEqual([]);
+    expect(isTimeDependent("2*i_R1")).toBe(true);
+  });
+
+  it("accepte la multiplication implicite", () => {
+    const ctx = (kind: "i" | "v", name: string) => (kind === "i" && name === "R1" ? 3 : 0);
+    expect(compileExpr("2 i_R1")(0, ctx)).toBeCloseTo(6, 12);
+    expect(compileExpr("2 sin(pi/2)")(0)).toBeCloseTo(2, 12);
+    expect(compileExpr("2(t+1)")(1)).toBeCloseTo(4, 12);
+    expect(compileExpr("3 i_R1^2")(0, ctx)).toBeCloseTo(27, 12);
   });
 });

@@ -3,12 +3,14 @@
  * - Condensateurs / bobines : intégration trapézoïdale (Euler implicite au premier pas).
  * - Diodes : Newton-Raphson avec limitation de tension.
  * - Sources dépendantes (VCVS, VCCS, CCVS, CCCS) : éléments à 4 terminaux.
- * - Toute valeur peut être une expression de t.
+ * - Toute valeur peut être une expression de t et des grandeurs d'autres composants (i_R1, v_R1). Pour les sources
+ *   de tension / courant, ces dépendances sont linéarisées (dérivées numériques) et intégrées à la matrice à chaque
+ *   itération de Newton : une expression linéaire est résolue exactement, une non linéaire converge par Newton.
  * - Fils : courant calculé a posteriori par résolution d'un laplacien par nœud.
  */
 
-import { evalValue } from "./expr";
-import { type Circuit, type Component, isDependentSource, pointKey, terminalPositions } from "./model";
+import { type QuantityCtx, type QuantityRef, evalValue, exprRefs } from "./expr";
+import { type Circuit, type Component, displayName, isDependentSource, pointKey, terminalPositions } from "./model";
 import { type Netlist, buildNetlist } from "./netlist";
 
 export interface ComponentResult {
@@ -33,6 +35,12 @@ interface DynState {
 const GMIN = 1e-12;
 const VT = 0.025852; // kT/q à 300 K
 const MAX_NEWTON = 60;
+
+/** Forme linéarisée d'une grandeur : q = Σ coef·x[col] + k. */
+interface Lin {
+  cols: [number, number][];
+  k: number;
+}
 
 export function solveLinear(A: Float64Array[], z: Float64Array, n: number): Float64Array | null {
   // Élimination de Gauss avec pivot partiel (modifie A et z).
@@ -93,6 +101,7 @@ function hasOutputBranch(c: Component): boolean {
     c.type === "battery" ||
     c.type === "acsource" ||
     c.type === "vfunc" ||
+    c.type === "vexpr" ||
     c.type === "ammeter" ||
     c.type === "vcvs" ||
     c.type === "ccvs" ||
@@ -124,6 +133,12 @@ export class Simulator {
   private branchIndex = new Map<string, number>();
   private forceBackwardEuler = true;
   private size = 0;
+  /** Composants par nom affiché (pour i_R1, v_R1 dans les expressions). */
+  private byName = new Map<string, Component>();
+  /** Grandeurs référencées par chaque propriété exprimée (id → clé → références). */
+  private propRefs = new Map<string, Map<string, QuantityRef[]>>();
+  /** Solution précédente (point de départ des itérations). */
+  private lastX: Float64Array = new Float64Array(0);
 
   constructor(circuit: Circuit) {
     this.circuit = circuit;
@@ -141,6 +156,18 @@ export class Simulator {
       if (hasControlBranch(c)) this.branchIndex.set(c.id + ":c", idx++);
     }
     this.size = idx;
+    this.byName.clear();
+    this.propRefs.clear();
+    for (const c of this.circuit.components) {
+      this.byName.set(displayName(c), c);
+      for (const [key, val] of Object.entries(c.props)) {
+        const refs = exprRefs(val);
+        if (refs.length === 0) continue;
+        if (!this.propRefs.has(c.id)) this.propRefs.set(c.id, new Map());
+        this.propRefs.get(c.id)!.set(key, refs);
+      }
+    }
+    if (this.lastX.length !== this.size) this.lastX = new Float64Array(this.size);
     const alive = new Set(this.circuit.components.map((c) => c.id));
     for (const k of [...this.states.keys()]) if (!alive.has(k)) this.states.delete(k);
     if (this.nodeVoltages.length !== this.netlist.nodeCount) {
@@ -168,11 +195,24 @@ export class Simulator {
     return s;
   }
 
-  /** Valeur d'une propriété à l'instant t (expression évaluée). */
-  prop(c: Component, key: string, t: number): number {
-    const v = evalValue(c.props[key], t);
+  /** Valeur d'une propriété à l'instant t (expression évaluée avec les grandeurs du circuit). */
+  prop(c: Component, key: string, t: number, ctx?: QuantityCtx): number {
+    const v = evalValue(c.props[key], t, ctx);
     return Number.isFinite(v) ? v : 0;
   }
+
+  /** Signe du sens de référence d'un composant (les expressions i_X / v_X utilisent les valeurs affichées). */
+  private refSign(c: Component): number {
+    return c.flipRef ? -1 : 1;
+  }
+
+  /** Grandeur d'un composant nommé d'après les derniers résultats (pour l'affichage et les expressions hors solveur). */
+  refValue: QuantityCtx = (kind, name) => {
+    const c = this.byName.get(name);
+    const r = c ? this.results.get(c.id) : undefined;
+    if (!c || !r) return 0;
+    return this.refSign(c) * (kind === "i" ? r.i : r.v);
+  };
 
   /** Recalcule les tensions à l'instant courant sans avancer le temps (pour l'affichage après édition). */
   private solveOperatingPoint(): void {
@@ -207,12 +247,131 @@ export class Simulator {
     const vd = new Map<string, number>();
     for (const d of diodes) vd.set(d.id, this.state(d.id).vDiode);
 
-    // Valeurs de propriétés évaluées à t (une fois par pas)
-    const P = (c: Component, key: string) => this.prop(c, key, t);
+    const hasRefs = this.propRefs.size > 0;
+    // Itéré courant des inconnues (point de départ : solution précédente)
+    let xk: Float64Array = this.lastX.length === n ? this.lastX : new Float64Array(n);
+
+    /**
+     * Linéarisation d'une grandeur (courant ou tension d'un composant) autour de l'itéré courant, en fonction des
+     * inconnues x (tensions de nœuds, courants de branches). Les sources de courant sont prises constantes.
+     */
+    const lin = (kind: "i" | "v", c: Component, ctx: QuantityCtx): Lin => {
+      const tn = nl.terminalNodes.get(c.id);
+      if (!tn || tn.length < 2) return { cols: [], k: 0 };
+      const ia = nodeIdx(tn[0]);
+      const ib = nodeIdx(tn[1]);
+      const across = (g: number, k = 0): Lin => {
+        const cols: [number, number][] = [];
+        if (ia >= 0) cols.push([ia, g]);
+        if (ib >= 0) cols.push([ib, -g]);
+        return { cols, k };
+      };
+      if (kind === "v") return across(1);
+      const Pc = (key: string) => this.prop(c, key, t, ctx);
+      switch (c.type) {
+        case "resistor":
+        case "lamp":
+        case "voltmeter":
+          return across(1 / Math.max(Pc("R"), 1e-9));
+        case "capacitor": {
+          const st = this.state(c.id);
+          const C = Math.max(Pc("C"), 1e-18);
+          if (dt === 0) return { cols: [], k: st.iPrev };
+          if (useBE) return across(C / dt, -(C / dt) * st.vPrev);
+          return across((2 * C) / dt, -((2 * C) / dt) * st.vPrev - st.iPrev);
+        }
+        case "inductor": {
+          const st = this.state(c.id);
+          const L = Math.max(Pc("L"), 1e-15);
+          if (dt === 0) return { cols: [], k: st.iPrev };
+          if (useBE) return across(dt / L, st.iPrev);
+          return across(dt / (2 * L), st.iPrev + (dt / (2 * L)) * st.vPrev);
+        }
+        case "currentsource":
+        case "ifunc":
+        case "iexpr":
+          return { cols: [], k: Pc("I") };
+        case "vccs": {
+          const G = Pc("gain");
+          const cols: [number, number][] = [];
+          const cp = nodeIdx(tn[2]);
+          const cm = nodeIdx(tn[3]);
+          if (cp >= 0) cols.push([cp, G]);
+          if (cm >= 0) cols.push([cm, -G]);
+          return { cols, k: 0 };
+        }
+        case "cccs":
+          return { cols: [[this.branchIndex.get(c.id + ":c")!, Pc("gain")]], k: 0 };
+        case "diode":
+        case "led": {
+          const nvt = VT * Pc("n");
+          const is = Pc("Is");
+          const v0 = vd.get(c.id) ?? 0;
+          const ex = Math.exp(Math.min(v0 / nvt, 80));
+          const g = (is * ex) / nvt + GMIN;
+          return across(g, is * (ex - 1) - g * v0);
+        }
+        default: {
+          const br = this.branchIndex.get(c.id);
+          return br === undefined ? { cols: [], k: 0 } : { cols: [[br, 1]], k: 0 };
+        }
+      }
+    };
+    const linValue = (l: Lin, xv: Float64Array) => l.cols.reduce((acc, [col, coef]) => acc + coef * xv[col], l.k);
+
+    /** Contexte d'évaluation des expressions à partir d'un vecteur d'inconnues (mémoïsé, cycles coupés à 0). */
+    const ctxAt = (xv: Float64Array): QuantityCtx => {
+      const memo = new Map<string, number>();
+      const ctx: QuantityCtx = (kind, name) => {
+        const key = `${kind}:${name}`;
+        const hit = memo.get(key);
+        if (hit !== undefined) return hit;
+        const c = this.byName.get(name);
+        if (!c) return 0;
+        memo.set(key, 0); // coupe les références circulaires
+        const val = this.refSign(c) * linValue(lin(kind, c, ctx), xv);
+        memo.set(key, val);
+        return val;
+      };
+      return ctx;
+    };
+
+    // Valeurs de propriétés évaluées à t, avec les grandeurs de l'itéré courant
+    let ctx = ctxAt(xk);
+    const P = (c: Component, key: string) => this.prop(c, key, t, ctx);
+
+    /**
+     * Valeur d'une source exprimée, linéarisée par rapport aux grandeurs qu'elle référence :
+     * e ≈ f(q0) + Σ ∂f/∂q · (q − q0), avec q linéaire en x. Retourne le terme constant et les coefficients sur x.
+     */
+    const behavioral = (c: Component, key: string): Lin => {
+      const refs = this.propRefs.get(c.id)?.get(key);
+      const f0 = P(c, key);
+      if (!refs) return { cols: [], k: f0 };
+      const out: Lin = { cols: [], k: f0 };
+      for (const ref of refs) {
+        const target = this.byName.get(ref.name);
+        if (!target) continue;
+        const s = this.refSign(target);
+        const l = lin(ref.kind, target, ctx);
+        const q0 = s * linValue(l, xk);
+        const h = Math.max(1e-7, 1e-4 * Math.abs(q0));
+        const evalWith = (q: number) => {
+          const over: QuantityCtx = (kind, name) => (kind === ref.kind && name === ref.name ? q : ctx(kind, name));
+          return this.prop(c, key, t, over);
+        };
+        const d = (evalWith(q0 + h) - evalWith(q0 - h)) / (2 * h);
+        if (!Number.isFinite(d) || d === 0) continue;
+        out.k += d * (s * l.k - q0);
+        for (const [col, coef] of l.cols) out.cols.push([col, d * s * coef]);
+      }
+      return out;
+    };
 
     let x: Float64Array | null = null;
-    let converged = diodes.length === 0;
+    let converged = diodes.length === 0 && !hasRefs;
     for (let iter = 0; iter < MAX_NEWTON; iter++) {
+      ctx = ctxAt(xk);
       const A: Float64Array[] = [];
       for (let r = 0; r < n; r++) A.push(new Float64Array(n));
       const z = new Float64Array(n);
@@ -299,12 +458,22 @@ export class Simulator {
           }
           case "currentsource":
           case "ifunc":
-            // le courant sort par le terminal 1 (pointe de la flèche)
-            stampI(b, a, P(c, "I"));
+          case "iexpr": {
+            // le courant sort par le terminal 1 (pointe de la flèche) ; partie linéarisée portée dans A
+            const l = behavioral(c, "I");
+            stampI(b, a, l.k);
+            const ia = nodeIdx(a);
+            const ib = nodeIdx(b);
+            for (const [col, coef] of l.cols) {
+              if (ib >= 0) A[ib][col] -= coef;
+              if (ia >= 0) A[ia][col] += coef;
+            }
             break;
+          }
           case "battery":
           case "acsource":
           case "vfunc":
+          case "vexpr":
           case "ammeter":
           case "switch": {
             if (!hasOutputBranch(c)) break; // interrupteur ouvert
@@ -314,11 +483,13 @@ export class Simulator {
               A[br][br] += 1; // branche court-circuitée : i = 0, matrice régulière
               break;
             }
-            let e = 0;
-            if (c.type === "battery" || c.type === "vfunc") e = P(c, "V");
-            else if (c.type === "acsource")
-              e = P(c, "A") * Math.sin(2 * Math.PI * P(c, "f") * t + (P(c, "phi") * Math.PI) / 180) + P(c, "off");
-            stampV(a, b, br, e);
+            if (c.type === "battery" || c.type === "vfunc" || c.type === "vexpr") {
+              const l = behavioral(c, "V");
+              stampV(a, b, br, l.k);
+              for (const [col, coef] of l.cols) A[br][col] -= coef;
+            } else if (c.type === "acsource") {
+              stampV(a, b, br, P(c, "A") * Math.sin(2 * Math.PI * P(c, "f") * t + (P(c, "phi") * Math.PI) / 180) + P(c, "off"));
+            } else stampV(a, b, br, 0);
             break;
           }
           case "vcvs": {
@@ -401,9 +572,25 @@ export class Simulator {
         return false;
       }
 
+      // Convergence des expressions : les inconnues ne bougent plus entre deux itérations
+      let refsOk = true;
+      if (hasRefs) {
+        let maxX = 0;
+        let maxDx = 0;
+        for (let k = 0; k < n; k++) {
+          maxX = Math.max(maxX, Math.abs(x[k]));
+          maxDx = Math.max(maxDx, Math.abs(x[k] - xk[k]));
+        }
+        refsOk = maxDx <= 1e-9 * (1 + maxX);
+        xk = x;
+      }
+
       if (diodes.length === 0) {
-        converged = true;
-        break;
+        if (refsOk) {
+          converged = true;
+          break;
+        }
+        continue;
       }
       let maxDelta = 0;
       for (const d of diodes) {
@@ -417,13 +604,15 @@ export class Simulator {
         maxDelta = Math.max(maxDelta, Math.abs(vnew - old));
         vd.set(d.id, vnew);
       }
-      if (maxDelta < 1e-6) {
+      if (maxDelta < 1e-6 && refsOk) {
         converged = true;
         break;
       }
     }
     if (!x) return false;
-    this.warning = converged ? null : "Convergence difficile (diodes).";
+    this.lastX = x;
+    ctx = ctxAt(x);
+    this.warning = converged ? null : hasRefs ? "Convergence difficile (diodes ou expressions)." : "Convergence difficile (diodes).";
 
     // Tensions de nœuds
     const volts = new Float64Array(nl.nodeCount);
@@ -476,11 +665,13 @@ export class Simulator {
         }
         case "currentsource":
         case "ifunc":
+        case "iexpr":
           i = P(c, "I");
           break;
         case "battery":
         case "acsource":
         case "vfunc":
+        case "vexpr":
         case "ammeter":
         case "switch":
         case "vcvs":
