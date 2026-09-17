@@ -23,7 +23,8 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
   suppression (Suppr), annuler / rétablir (Ctrl+Z / Ctrl+Y), zoom à la molette, sauvegarde automatique et export JSON.
 - **Simulation** : analyse nodale modifiée en transitoire (méthode trapézoïdale), diodes par Newton-Raphson,
   vitesse réglable de ×0,0001 à ×10 pour observer aussi bien un RC lent qu'un signal à 60 Hz.
-- **Animation** : les électrons se déplacent à une vitesse proportionnelle au courant (saturée), du − vers le +
+- **Animation** : les électrons se déplacent à une vitesse qui suit le courant sur une échelle logarithmique
+  plafonnée (lisible du µA à l'ampère, sans effet stroboscopique), du − vers le +
   (ou dans le sens conventionnel au choix) ; les fils sont colorés selon la tension ; ampoules et DEL s'allument.
 - **Mesures** : survol pour lire V, I et P ; voltmètre / ampèremètre ; affichage de V, I, P sur chaque composant.
 - **Oscilloscope** : tracé de la tension, du courant, de la puissance ou de la résistance (V/I) de n'importe quel

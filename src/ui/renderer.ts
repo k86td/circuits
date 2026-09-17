@@ -647,12 +647,19 @@ export class Renderer {
   private drawElectrons(ctx: CanvasRenderingContext2D, frameDt: number): void {
     const app = this.app;
     const spacing = 14;
-    const vmax = 220; // px/s
+    // Vitesse des électrons : échelle logarithmique plafonnée. Le courant de référence iRef
+    // donne ~60 % de la vitesse maximale ; iRef/1000 donne un lent défilement ; 100·iRef et plus : plafond.
+    // Un vrai courant ferait défiler les points trop vite pour l'œil : on compresse volontairement.
+    const vmax = 130; // px/s au plafond (≈ 2 px par image à 60 Hz : mouvement fluide, sans stroboscope)
     const iRef = Math.max(1e-12, app.options.iRef);
     const speedOf = (i: number) => {
       const x = Math.abs(i) / iRef;
-      return (vmax * x) / (1 + x);
+      if (x < 1e-4) return 0;
+      const f = 0.06 + 0.94 * ((Math.log10(x) + 3) / 5);
+      return vmax * Math.min(1, Math.max(0.06, f));
     };
+    // Déplacement maximal par image, pour qu'un point ne saute jamais plus du tiers de l'espacement
+    const maxStep = spacing * 0.35;
     const paths: { key: string; pts: Vec[]; i: number }[] = [];
     for (const w of app.circuit.wires) {
       paths.push({ key: w.id, pts: [gridToWorld(w.a), gridToWorld(w.b)], i: app.sim.wireCurrents.get(w.id) ?? 0 });
@@ -677,7 +684,7 @@ export class Renderer {
       if (total < 1) continue;
       const dir = app.options.conventional ? 1 : -1;
       let phase = this.phases.get(p.key) ?? 0;
-      if (app.running) phase += dir * Math.sign(p.i) * speedOf(p.i) * frameDt;
+      if (app.running) phase += dir * Math.sign(p.i) * Math.min(maxStep, speedOf(p.i) * frameDt);
       phase = ((phase % spacing) + spacing) % spacing;
       this.phases.set(p.key, phase);
       const moving = Math.abs(p.i) > iRef * 1e-4;

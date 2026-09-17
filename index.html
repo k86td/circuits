@@ -56,8 +56,8 @@
           <label><input type="checkbox" id="opt-colors" /> Colorer les fils selon la tension (rouge +, bleu −)</label>
           <label><input type="checkbox" id="opt-values" /> Afficher les valeurs</label>
           <label><input type="checkbox" id="opt-readings" /> Afficher V, I, P sur chaque composant</label>
-          <label class="slider" title="Courant pour lequel les électrons atteignent la moitié de la vitesse maximale">
-            <span>Échelle des électrons</span>
+          <label class="slider" title="Courant de référence : la vitesse des électrons suit une échelle logarithmique plafonnée (iRef/1000 → lent, iRef → moyen, 100×iRef et plus → vitesse maximale)">
+            <span>Échelle des électrons (courant de référence)</span>
             <input id="opt-iref" type="range" />
             <span id="opt-iref-label" class="mono"></span>
           </label>
