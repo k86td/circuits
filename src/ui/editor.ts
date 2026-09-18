@@ -47,6 +47,8 @@ export class Editor {
   private lastFrame = performance.now();
   private toolListeners: ((t: Tool) => void)[] = [];
   private lastModeLabel = "";
+  /** Bord gauche du canevas à l'image précédente : quand un panneau glisse, le circuit reste immobile à l'écran. */
+  private lastLeft: number | null = null;
 
   constructor(
     private app: App,
@@ -634,6 +636,8 @@ export class Editor {
     const dpr = window.devicePixelRatio || 1;
     const rect = this.canvas.getBoundingClientRect();
     if (Math.round(rect.width * dpr) !== this.canvas.width || Math.round(rect.height * dpr) !== this.canvas.height) this.resize();
+    if (this.lastLeft !== null && rect.left !== this.lastLeft) this.view.pan.x += this.lastLeft - rect.left;
+    this.lastLeft = rect.left;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const m = this.mode;
     // Survol : la souris si elle est sur le canevas, sinon l'élément sous le curseur clavier.

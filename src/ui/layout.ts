@@ -1,7 +1,8 @@
 /**
  * Disposition : les trois panneaux (palette à gauche, propriétés à droite, oscilloscope en bas) peuvent être
  * masqués / affichés depuis la barre supérieure, depuis leur propre bouton de fermeture ou au clavier
- * (1, 2, 3 : voir commands.ts).
+ * (1, 2, 3 : voir commands.ts). L'ouverture et la fermeture sont animées en CSS : les pistes de la grille
+ * (--col-left, --col-right, --row-bottom) se referment pendant que le panneau glisse hors de l'écran.
  * L'état est mémorisé. Sur écran étroit, les panneaux latéraux se superposent au canevas.
  */
 
@@ -12,6 +13,7 @@ import type { MdIconButton } from "./material";
 export type PanelId = "left" | "right" | "bottom";
 
 const PANELS: PanelId[] = ["left", "right", "bottom"];
+const PANEL_IDS: Record<PanelId, string> = { left: "#palette-panel", right: "#right", bottom: "#scope-panel" };
 const STORAGE_KEY = "circuits.layout.v1";
 const ICONS: Record<PanelId, { shown: string; hidden: string }> = {
   left: { shown: "left_panel_close", hidden: "left_panel_open" },
@@ -83,6 +85,10 @@ export class Layout {
     body.classList.toggle("compact", this.compact.matches);
     for (const p of PANELS) {
       body.classList.toggle(`hide-${p}`, this.hidden[p]);
+      // Le panneau reste dans la disposition pendant l'animation (CSS) ; inert le retire du focus et des lecteurs d'écran.
+      const panel = $(PANEL_IDS[p]);
+      panel.inert = this.hidden[p];
+      panel.setAttribute("aria-hidden", String(this.hidden[p]));
       const btn = $<MdIconButton>(`#toggle-${p}`);
       btn.selected = this.hidden[p];
       const icon = btn.querySelector<HTMLElement>("md-icon");

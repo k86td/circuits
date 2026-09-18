@@ -32,8 +32,14 @@
   --radius-card: 16px;
   --gap: 8px;
   --side-width: 250px;
+  --scope-height: 236px;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  /* Pistes de grille occupées par les panneaux (0 quand ils sont masqués) : leur transition anime la disposition. */
+  --col-left: calc(var(--side-width) + var(--gap));
+  --col-right: calc(var(--side-width) + var(--gap));
+  --row-bottom: var(--scope-height);
+  --panel-motion: 0.32s var(--ease-emphasized);
 
   color-scheme: dark;
 }
@@ -56,10 +62,25 @@ body {
 
 body {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) var(--row-bottom);
   height: 100vh;
   gap: var(--gap);
   padding: 0 var(--gap) var(--gap);
+  transition:
+    background-color 0.25s var(--ease-emphasized),
+    grid-template-rows var(--panel-motion);
+}
+
+body.hide-left {
+  --col-left: 0px;
+}
+
+body.hide-right {
+  --col-right: 0px;
+}
+
+body.hide-bottom {
+  --row-bottom: 0px;
 }
 
 md-icon svg {
@@ -198,12 +219,18 @@ md-icon svg {
 main {
   position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: var(--col-left) minmax(0, 1fr) var(--col-right);
   min-height: 0;
+  transition: grid-template-columns var(--panel-motion);
 }
 
+/*
+ * Panneaux latéraux : largeur fixe (leur contenu ne se recompose pas pendant l'animation) ; quand la piste de
+ * grille se referme, ils glissent hors de l'écran en même temps, avec un fondu.
+ */
 #palette-panel {
   grid-column: 1;
+  justify-self: start;
   margin-right: var(--gap);
 }
 
@@ -213,7 +240,52 @@ main {
 
 #right {
   grid-column: 3;
+  justify-self: end;
   margin-left: var(--gap);
+}
+
+.panel.side,
+#scope-panel {
+  transition:
+    background-color 0.25s var(--ease-emphasized),
+    transform var(--panel-motion),
+    opacity 0.22s var(--ease-emphasized),
+    visibility 0s linear 0s;
+}
+
+body.hide-left #palette-panel,
+body.hide-right #right,
+body.hide-bottom #scope-panel {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    background-color 0.25s var(--ease-emphasized),
+    transform var(--panel-motion),
+    opacity 0.22s var(--ease-emphasized) 0.08s,
+    visibility 0s linear 0.32s;
+}
+
+body.hide-left #palette-panel {
+  transform: translateX(calc(-100% - var(--gap) * 2));
+}
+
+body.hide-right #right {
+  transform: translateX(calc(100% + var(--gap) * 2));
+}
+
+body.hide-bottom #scope-panel {
+  transform: translateY(calc(100% + var(--gap) * 2));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body,
+  main,
+  .panel.side,
+  #scope-panel,
+  #scrim {
+    transition: none !important;
+  }
 }
 
 .panel {
@@ -260,20 +332,17 @@ main {
   --md-icon-button-state-layer-height: 32px;
 }
 
-body.hide-left #palette-panel,
-body.hide-right #right,
-body.hide-bottom #scope-panel {
-  display: none;
-}
-
 #scrim {
-  display: none;
   position: absolute;
   inset: 0;
   background: var(--md-sys-color-scrim);
-  opacity: 0.32;
+  opacity: 0;
+  visibility: hidden;
   border-radius: var(--radius-card);
   z-index: 3;
+  transition:
+    opacity var(--panel-motion),
+    visibility 0s linear 0.32s;
 }
 
 /* Écrans étroits : les panneaux latéraux se superposent au canevas. */
@@ -292,6 +361,7 @@ body.compact .side {
   top: 0;
   bottom: 0;
   margin: 0;
+  justify-self: auto;
   z-index: 4;
   width: min(var(--side-width), 85vw);
   background: var(--md-sys-color-surface-container-high);
@@ -307,7 +377,9 @@ body.compact #right {
 }
 
 body.compact.overlay-open #scrim {
-  display: block;
+  opacity: 0.32;
+  visibility: visible;
+  transition: opacity var(--panel-motion), visibility 0s linear 0s;
 }
 
 /* ---------- Palette ---------- */
@@ -795,7 +867,8 @@ table.keys td:first-child {
 #scope-panel {
   display: flex;
   flex-direction: column;
-  height: 236px;
+  height: var(--scope-height);
+  align-self: start;
   padding: 0 8px 8px;
   overflow: hidden;
 }
