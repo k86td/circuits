@@ -1,10 +1,11 @@
 /**
  * Disposition : les trois panneaux (palette à gauche, propriétés à droite, oscilloscope en bas) peuvent être
- * masqués / affichés depuis la barre supérieure, depuis leur propre bouton de fermeture ou au clavier (1, 2, 3).
+ * masqués / affichés depuis la barre supérieure, depuis leur propre bouton de fermeture ou au clavier
+ * (1, 2, 3 : voir commands.ts).
  * L'état est mémorisé. Sur écran étroit, les panneaux latéraux se superposent au canevas.
  */
 
-import { $, isEditableTarget } from "./dom";
+import { $ } from "./dom";
 import { setIcon } from "./icons";
 import type { MdIconButton } from "./material";
 
@@ -17,7 +18,6 @@ const ICONS: Record<PanelId, { shown: string; hidden: string }> = {
   right: { shown: "right_panel_close", hidden: "right_panel_open" },
   bottom: { shown: "bottom_panel_close", hidden: "bottom_panel_open" },
 };
-const KEYS: Record<string, PanelId> = { "1": "left", "2": "right", "3": "bottom" };
 
 export class Layout {
   hidden: Record<PanelId, boolean> = { left: false, right: false, bottom: false };
@@ -48,14 +48,6 @@ export class Layout {
     $("#scrim").addEventListener("click", () => {
       this.set("left", true);
       this.set("right", true);
-    });
-    window.addEventListener("keydown", (e) => {
-      if (e.ctrlKey || e.metaKey || e.altKey || isEditableTarget(e)) return;
-      const p = KEYS[e.key];
-      if (p) {
-        e.preventDefault();
-        this.toggle(p);
-      }
     });
     this.compact.addEventListener("change", () => this.applyToDom());
     this.applyToDom();

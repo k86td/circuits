@@ -388,7 +388,10 @@ body.compact.overlay-open #scrim {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 6px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 14px 5px 8px;
   font-size: 12px;
   color: var(--md-sys-color-on-surface-variant);
   background: color-mix(in srgb, var(--md-sys-color-surface-container) 88%, transparent);
@@ -407,6 +410,259 @@ body.compact.overlay-open #scrim {
 
 #status.warn {
   color: var(--md-sys-color-tertiary);
+}
+
+#status-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Indicateur de mode, façon vim */
+#mode {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  pointer-events: auto;
+  cursor: default;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+#mode[data-mode="fil"],
+#mode[data-mode="poser"] {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+#mode[data-mode="déplacer"],
+#mode[data-mode="glisser"] {
+  background: var(--md-sys-color-tertiary);
+  color: var(--md-sys-color-surface);
+}
+
+#mode[data-mode="saisie"],
+#mode[data-mode="commande"] {
+  background: var(--md-sys-color-inverse-surface);
+  color: var(--md-sys-color-inverse-on-surface);
+}
+
+#mode[data-mode="attente"] {
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+
+/* ---------- Which-key (sous-menus de la touche maître) ---------- */
+
+#whichkey {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 36px;
+  max-height: 60%;
+  overflow: auto;
+  padding: 10px 14px 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--md-sys-color-surface-container-high) 94%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  z-index: 5;
+  animation: wk-in 0.12s var(--ease-emphasized);
+}
+
+@keyframes wk-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.wk-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--md-sys-color-on-surface-variant);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wk-head .wk-esc {
+  margin-left: auto;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.8;
+}
+
+.wk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 2px 18px;
+}
+
+.wk-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+  font-size: 13px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wk-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wk-item.group span {
+  color: var(--md-sys-color-primary);
+  font-weight: 500;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--md-sys-color-surface-container-highest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  box-shadow: 0 1px 0 var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.wk-head kbd {
+  color: var(--md-sys-color-primary);
+  font-weight: 700;
+}
+
+/* ---------- Palette de commandes ---------- */
+
+#cmdpal {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 8vh;
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 30%, transparent);
+}
+
+#cmdpal[hidden] {
+  display: none;
+}
+
+.cmdpal-box {
+  width: min(560px, 92%);
+  max-height: 70%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.cmdpal-box input {
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  font: inherit;
+  font-size: 15px;
+  outline: none;
+}
+
+.cmdpal-box ul {
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.cmdpal-box li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cmdpal-box li.active,
+.cmdpal-box li:hover {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.cmdpal-box li.empty {
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: default;
+}
+
+.cmdpal-box li kbd {
+  flex: none;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ---------- Tableau des raccourcis (aide) ---------- */
+
+.key-help h4 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+table.keys {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+table.keys td {
+  padding: 3px 8px 3px 0;
+  vertical-align: top;
+  border-bottom: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 50%, transparent);
+}
+
+table.keys td:first-child {
+  width: 34%;
+  white-space: nowrap;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.help-content p kbd {
+  margin: 0 1px;
 }
 
 /* ---------- Propriétés ---------- */

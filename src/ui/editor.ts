@@ -1,18 +1,29 @@
-/** Interaction avec le canvas : sélection, déplacement, tracé de fils, zoom, clavier, boucle d'animation. */
+/**
+ * Interaction avec le canvas : sélection, déplacement, tracé de fils, zoom, clavier, boucle d'animation.
+ *
+ * Deux façons de travailler cohabitent :
+ * - la souris : glisser un composant, un chemin de fils ou une jonction (les fils suivent, élastiques et
+ *   orthogonaux), tirer un fil depuis un terminal, zoomer à la molette ;
+ * - le clavier seul : un curseur de grille déplacé par h j k l, des composants posés sous le curseur,
+ *   des fils tracés avec w, et des commandes (voir commands.ts) atteintes par une touche ou par la touche
+ *   maître Espace suivie d'un sous-menu.
+ */
 
-import { type ComponentType, type Rot, type Vec, samePoint, terminalPositions } from "../sim/model";
+import { type Circuit, type ComponentType, type Rot, type Vec, cloneCircuit, samePoint } from "../sim/model";
+import { moveWireEnd, relocateComponent, translateWires } from "../sim/wiring";
 import type { App } from "./app";
-import { isButtonTarget, isEditableTarget } from "./dom";
-import { type Hit, type Renderer, type View, G, hitTest, screenToWorld, worldToGrid } from "./renderer";
+import { isButtonTarget, isEditableElement, isEditableTarget } from "./dom";
+import type { Keymap } from "./keys";
+import { type Hit, type Renderer, type View, G, gridToWorld, hitTest, screenToWorld, worldToGrid, worldToScreen } from "./renderer";
 
 export type Tool = "select" | "wire";
 
 type Mode =
   | { kind: "idle" }
   | { kind: "pan"; start: Vec; panStart: Vec; moved: boolean }
-  | { kind: "moveComponent"; id: string; grab: Vec; moved: boolean; wireEnds: { id: string; end: "a" | "b"; term: number }[] }
-  | { kind: "moveWire"; id: string; grab: Vec; startA: Vec; startB: Vec; moved: boolean }
-  | { kind: "moveWireEnd"; id: string; end: "a" | "b"; moved: boolean }
+  | { kind: "moveComponent"; id: string; grab: Vec; base: Circuit; last: Vec; moved: boolean }
+  | { kind: "moveWires"; ids: string[]; grab: Vec; base: Circuit; last: Vec; moved: boolean; detach: boolean }
+  | { kind: "moveWireEnd"; id: string; end: "a" | "b"; base: Circuit; last: Vec; moved: boolean; group: boolean }
   | { kind: "drawWire"; from: Vec; to: Vec }
   | { kind: "place"; type: ComponentType; rot: Rot; pos: Vec | null };
 
@@ -21,10 +32,21 @@ export class Editor {
   tool: Tool = "select";
   hover: Hit | null = null;
   cursorWorld: Vec | null = null;
+  /** Curseur clavier (point de grille) ; null tant qu'il n'a pas servi. */
+  kcursor: Vec | null = null;
+  /** Point de départ du fil en cours de tracé au clavier. */
+  kwire: Vec | null = null;
+  /** Mode déplacement : h j k l déplacent la sélection au lieu du curseur. */
+  moveMode = false;
+  /** true quand un glisser depuis la palette est en cours (dépôt au relâchement). */
+  placeOnRelease = false;
+  keymap: Keymap | null = null;
+  private khit: Hit | null = null;
   private mode: Mode = { kind: "idle" };
   private ctx: CanvasRenderingContext2D;
   private lastFrame = performance.now();
   private toolListeners: ((t: Tool) => void)[] = [];
+  private lastModeLabel = "";
 
   constructor(
     private app: App,
@@ -39,6 +61,16 @@ export class Editor {
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     canvas.addEventListener("dblclick", (e) => this.onDoubleClick(e));
     window.addEventListener("keydown", (e) => this.onKey(e));
+    // Échap dans un champ de saisie : retour au canevas (« mode normal »), sauf dans un dialogue ou un menu.
+    window.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.key !== "Escape" || !isEditableTarget(e)) return;
+        if (e.composedPath().some((el) => el instanceof HTMLElement && /^MD-(DIALOG|MENU)$/.test(el.tagName))) return;
+        this.focusCanvas();
+      },
+      true,
+    );
     window.addEventListener("resize", () => this.resize());
     this.resize();
     requestAnimationFrame((t) => this.frame(t));
@@ -55,7 +87,7 @@ export class Editor {
     this.updateCursor();
   }
 
-  /** Démarre le placement d'un composant (depuis la palette). */
+  /** Démarre le placement d'un composant à la souris (depuis la palette). */
   startPlacing(type: ComponentType): void {
     this.mode = { kind: "place", type, rot: 0, pos: null };
     this.updateCursor();
@@ -70,12 +102,21 @@ export class Editor {
     this.updateCursor();
   }
 
+  /** Rend le focus au canevas (les raccourcis globaux redeviennent actifs). */
+  focusCanvas(): void {
+    const active = document.activeElement as HTMLElement | null;
+    active?.blur();
+    this.canvas.focus({ preventScroll: true });
+  }
+
   resize(): void {
     const dpr = window.devicePixelRatio || 1;
     const rect = this.canvas.getBoundingClientRect();
     this.canvas.width = Math.max(1, Math.round(rect.width * dpr));
     this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
   }
+
+  // ---- Vue ----
 
   /** Centre la vue sur le circuit. */
   zoomToFit(): void {
@@ -96,8 +137,8 @@ export class Editor {
       maxY = Math.max(maxY, p.y);
     };
     for (const comp of c.components) {
-      add(comp.pos);
-      terminalPositions(comp).forEach(add);
+      add({ x: comp.pos.x - 2, y: comp.pos.y - 2 });
+      add({ x: comp.pos.x + 2, y: comp.pos.y + 2 });
     }
     for (const w of c.wires) {
       add(w.a);
@@ -111,6 +152,243 @@ export class Editor {
     this.view = { zoom, pan: { x: rect.width / 2 - cx * zoom, y: rect.height / 2 - cy * zoom } };
   }
 
+  /** Zoome d'un facteur autour d'un point écran (par défaut : curseur clavier ou centre). */
+  zoomBy(factor: number, about?: Vec): void {
+    const rect = this.canvas.getBoundingClientRect();
+    const s = about ?? (this.kcursor ? worldToScreen(gridToWorld(this.kcursor), this.view) : { x: rect.width / 2, y: rect.height / 2 });
+    const nz = Math.min(4, Math.max(0.2, this.view.zoom * factor));
+    const k = nz / this.view.zoom;
+    this.view.pan = { x: s.x - (s.x - this.view.pan.x) * k, y: s.y - (s.y - this.view.pan.y) * k };
+    this.view.zoom = nz;
+  }
+
+  zoomReset(): void {
+    this.zoomBy(1 / this.view.zoom);
+  }
+
+  /** Centre la vue sur un point de grille. */
+  centerOn(p: Vec): void {
+    const rect = this.canvas.getBoundingClientRect();
+    const w = gridToWorld(p);
+    this.view.pan = { x: rect.width / 2 - w.x * this.view.zoom, y: rect.height / 2 - w.y * this.view.zoom };
+  }
+
+  /** Centre sur la sélection, sinon sur le curseur clavier. */
+  centerOnFocus(): void {
+    const c = this.app.selectedComponent();
+    if (c) this.centerOn(c.pos);
+    else if (this.kcursor) this.centerOn(this.kcursor);
+  }
+
+  /** Point de grille au centre de la vue. */
+  private centerGrid(): Vec {
+    const rect = this.canvas.getBoundingClientRect();
+    return worldToGrid(screenToWorld({ x: rect.width / 2, y: rect.height / 2 }, this.view));
+  }
+
+  // ---- Curseur clavier ----
+
+  /** Curseur clavier, créé au centre de la vue s'il n'existe pas encore. */
+  ensureCursor(): Vec {
+    if (!this.kcursor) this.setCursor(this.centerGrid());
+    return this.kcursor!;
+  }
+
+  setCursor(p: Vec): void {
+    this.kcursor = { x: p.x, y: p.y };
+    this.keepCursorVisible();
+    this.updateCursorHit();
+  }
+
+  hideCursor(): void {
+    this.kcursor = null;
+    this.khit = null;
+  }
+
+  /** h j k l : déplace le curseur (ou la sélection en mode déplacement) de `step` pas de grille. */
+  moveCursor(dx: number, dy: number): void {
+    if (this.moveMode && this.app.selection) {
+      this.app.nudgeSelection({ x: dx, y: dy });
+      if (this.kcursor) this.setCursor({ x: this.kcursor.x + dx, y: this.kcursor.y + dy });
+      return;
+    }
+    const c = this.ensureCursor();
+    this.setCursor({ x: c.x + dx, y: c.y + dy });
+  }
+
+  private keepCursorVisible(): void {
+    if (!this.kcursor) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const s = worldToScreen(gridToWorld(this.kcursor), this.view);
+    const m = 48;
+    let dx = 0;
+    let dy = 0;
+    if (s.x < m) dx = m - s.x;
+    else if (s.x > rect.width - m) dx = rect.width - m - s.x;
+    if (s.y < m) dy = m - s.y;
+    else if (s.y > rect.height - m - 28) dy = rect.height - m - 28 - s.y;
+    this.view.pan = { x: this.view.pan.x + dx, y: this.view.pan.y + dy };
+  }
+
+  private updateCursorHit(): void {
+    this.khit = this.kcursor ? hitTest(this.app, gridToWorld(this.kcursor), this.view.zoom) : null;
+  }
+
+  /** Élément sous le curseur clavier. */
+  cursorHit(): Hit | null {
+    return this.khit;
+  }
+
+  /** Composant visé par une commande : la sélection, sinon celui sous le curseur clavier. */
+  targetComponentId(): string | null {
+    const sel = this.app.selectedComponent();
+    if (sel) return sel.id;
+    if (this.khit?.kind === "component") return this.khit.id;
+    if (this.khit?.kind === "terminal") return this.khit.compId;
+    return null;
+  }
+
+  /** Entrée : sélectionne / modifie l'élément sous le curseur, ou termine le fil en cours. */
+  activateCursor(): void {
+    if (this.kwire) {
+      this.finishKeyboardWire(false);
+      return;
+    }
+    const h = this.khit;
+    if (!h) {
+      this.app.select(null);
+      return;
+    }
+    if (h.kind === "terminal" || h.kind === "wireEnd") {
+      this.startKeyboardWire();
+      return;
+    }
+    if (h.kind === "wire") {
+      this.app.selectWire(h.id);
+      return;
+    }
+    const sel = this.app.selection;
+    if (sel?.kind === "component" && sel.id === h.id) this.editSelected();
+    else this.app.select({ kind: "component", id: h.id });
+  }
+
+  /** Donne le focus au champ principal du composant sélectionné (valeur). */
+  editSelected(): void {
+    if (!this.app.selectedComponent()) return;
+    const field =
+      document.querySelector<HTMLElement & { select?: () => void }>("#props md-outlined-text-field[data-main]") ??
+      document.querySelector<HTMLElement & { select?: () => void }>("#props md-outlined-text-field");
+    if (!field) return;
+    field.focus();
+    field.select?.();
+  }
+
+  /** x : supprime l'élément sous le curseur clavier, sinon la sélection. */
+  deleteAtCursor(): void {
+    const h = this.khit;
+    if (h?.kind === "component") this.app.select({ kind: "component", id: h.id });
+    else if (h?.kind === "wire") this.app.selectWire(h.id);
+    else if (h?.kind === "wireEnd") this.app.selectWire(h.id);
+    this.app.deleteSelection();
+    this.updateCursorHit();
+  }
+
+  /** Tab : sélectionne le composant suivant (ordre de lecture) et y amène le curseur. */
+  cycleSelection(dir: 1 | -1): void {
+    const comps = [...this.app.circuit.components].sort((a, b) => a.pos.y - b.pos.y || a.pos.x - b.pos.x);
+    if (comps.length === 0) return;
+    const cur = this.app.selectedComponent();
+    let idx = cur ? comps.findIndex((c) => c.id === cur.id) : -1;
+    idx = (idx + dir + comps.length) % comps.length;
+    const c = comps[idx];
+    this.app.select({ kind: "component", id: c.id });
+    this.setCursor(c.pos);
+  }
+
+  /** Pose un composant sous le curseur clavier (rotation du dernier composant posé au clavier conservée). */
+  placeAtCursor(type: ComponentType): void {
+    const p = this.ensureCursor();
+    this.app.addComponent(type, p, 0);
+    this.updateCursorHit();
+  }
+
+  pasteAtCursor(): boolean {
+    const p = this.ensureCursor();
+    const ok = this.app.paste(p);
+    this.updateCursorHit();
+    return ok;
+  }
+
+  toggleMoveMode(): void {
+    if (!this.app.selection) {
+      // Rien de sélectionné : on tente l'élément sous le curseur.
+      const h = this.khit;
+      if (h?.kind === "component") this.app.select({ kind: "component", id: h.id });
+      else if (h?.kind === "wire") this.app.selectWire(h.id);
+      else if (h?.kind === "wireEnd") this.app.selectWire(h.id);
+    }
+    this.moveMode = !this.moveMode && !!this.app.selection;
+  }
+
+  // ---- Fil au clavier ----
+
+  /** w : commence un fil au curseur, ou termine le segment en cours et en enchaîne un nouveau. */
+  startKeyboardWire(): void {
+    const p = this.ensureCursor();
+    if (!this.kwire) {
+      this.kwire = { ...p };
+      return;
+    }
+    this.finishKeyboardWire(true);
+  }
+
+  finishKeyboardWire(chain: boolean): void {
+    if (!this.kwire) return;
+    const p = this.ensureCursor();
+    if (!samePoint(this.kwire, p)) this.app.addWire(this.kwire, p);
+    this.kwire = chain ? { ...p } : null;
+    this.updateCursorHit();
+  }
+
+  cancelKeyboardWire(): void {
+    this.kwire = null;
+  }
+
+  isDrawingWire(): boolean {
+    return this.kwire !== null || this.mode.kind === "drawWire";
+  }
+
+  /**
+   * Échap : annule ce qui est en cours, du plus précis au plus général (placement, fil, mode déplacement,
+   * outil fil, sélection, curseur clavier), et rend le focus au canevas.
+   */
+  escape(): void {
+    this.keymap?.closePalette();
+    if (this.mode.kind === "place" || this.mode.kind === "drawWire") this.cancel();
+    else if (this.kwire) this.cancelKeyboardWire();
+    else if (this.moveMode) this.moveMode = false;
+    else if (this.tool === "wire") this.setTool("select");
+    else if (this.app.selection) this.app.select(null);
+    else this.hideCursor();
+    this.focusCanvas();
+    this.updateCursor();
+  }
+
+  /** Libellé du mode courant, façon vim. */
+  modeLabel(): string {
+    if (this.keymap?.isPaletteOpen()) return "COMMANDE";
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && isEditableElement(active)) return "SAISIE";
+    if (this.keymap?.pending.length) return `ATTENTE  ${this.keymap.pendingLabel}`;
+    if (this.mode.kind === "place") return "POSER";
+    if (this.kwire || this.mode.kind === "drawWire" || this.tool === "wire") return "FIL";
+    if (this.moveMode) return "DÉPLACER";
+    if (this.mode.kind === "moveComponent" || this.mode.kind === "moveWires" || this.mode.kind === "moveWireEnd") return "GLISSER";
+    return "NORMAL";
+  }
+
+  // ---- Souris ----
+
   private clientToWorld(e: { clientX: number; clientY: number }): Vec {
     const rect = this.canvas.getBoundingClientRect();
     return screenToWorld({ x: e.clientX - rect.left, y: e.clientY - rect.top }, this.view);
@@ -123,10 +401,14 @@ export class Editor {
 
   private onPointerDown(e: PointerEvent): void {
     if (e.button !== 0 && e.button !== 1) return;
+    this.keymap?.cancel();
+    this.keymap?.closePalette();
     const target = e.target as HTMLElement;
-    target.focus?.();
+    target.focus?.({ preventScroll: true });
     const world = this.clientToWorld(e);
     const grid = worldToGrid(world);
+    // Le curseur clavier suit les clics : « a r » pose ensuite une résistance à cet endroit.
+    if (this.kcursor) this.setCursor(grid);
 
     if (this.mode.kind === "place") {
       const m = this.mode;
@@ -158,8 +440,9 @@ export class Editor {
     }
     if (hit.kind === "wireEnd") {
       const sel = this.app.selection;
-      if (sel?.kind === "wire" && sel.id === hit.id) {
-        this.mode = { kind: "moveWireEnd", id: hit.id, end: hit.end, moved: false };
+      if (sel?.kind === "wire" && sel.ids.includes(hit.id)) {
+        // Fil déjà sélectionné : on déplace la jonction (Alt : seulement cette extrémité).
+        this.mode = { kind: "moveWireEnd", id: hit.id, end: hit.end, base: cloneCircuit(this.app.circuit), last: hit.point, moved: false, group: !e.altKey };
       } else {
         this.mode = { kind: "drawWire", from: hit.point, to: hit.point };
       }
@@ -168,27 +451,28 @@ export class Editor {
     if (hit.kind === "component") {
       const c = this.app.componentById(hit.id)!;
       this.app.select({ kind: "component", id: c.id });
-      const terms = terminalPositions(c);
-      const wireEnds: { id: string; end: "a" | "b"; term: number }[] = [];
-      for (const w of this.app.circuit.wires) {
-        for (const end of ["a", "b"] as const) {
-          const term = terms.findIndex((t) => samePoint(t, w[end]));
-          if (term >= 0) wireEnds.push({ id: w.id, end, term });
-        }
-      }
       this.mode = {
         kind: "moveComponent",
         id: c.id,
         grab: { x: world.x / G - c.pos.x, y: world.y / G - c.pos.y },
+        base: cloneCircuit(this.app.circuit),
+        last: { ...c.pos },
         moved: false,
-        wireEnds,
       };
       return;
     }
     if (hit.kind === "wire") {
-      const w = this.app.circuit.wires.find((x) => x.id === hit.id)!;
-      this.app.select({ kind: "wire", id: w.id });
-      this.mode = { kind: "moveWire", id: w.id, grab: { x: world.x / G, y: world.y / G }, startA: { ...w.a }, startB: { ...w.b }, moved: false };
+      // Clic : tout le chemin de fils reliés ; Alt+clic : ce seul segment.
+      this.app.selectWire(hit.id, e.altKey);
+      this.mode = {
+        kind: "moveWires",
+        ids: this.app.selectedWireIds(),
+        grab: { x: world.x / G, y: world.y / G },
+        base: cloneCircuit(this.app.circuit),
+        last: { x: 0, y: 0 },
+        moved: false,
+        detach: e.altKey,
+      };
     }
   }
 
@@ -213,51 +497,38 @@ export class Editor {
         break;
       }
       case "moveComponent": {
-        const c = this.app.componentById(m.id);
-        if (!c) break;
         const np = { x: Math.round(world.x / G - m.grab.x), y: Math.round(world.y / G - m.grab.y) };
-        if (samePoint(np, c.pos)) break;
+        if (samePoint(np, m.last)) break;
         if (!m.moved) {
           m.moved = true;
           this.app.snapshot();
         }
-        c.pos = np;
-        const newTerms = terminalPositions(c);
-        for (const we of m.wireEnds) {
-          const w = this.app.circuit.wires.find((x) => x.id === we.id);
-          if (w) w[we.end] = { ...newTerms[we.term] };
-        }
-        this.app.sim.circuit = this.app.circuit;
-        this.app.sim.rebuild();
-        this.app.sim.computeWireCurrents();
+        m.last = np;
+        this.app.preview(m.base, (c) => {
+          const comp = c.components.find((x) => x.id === m.id);
+          if (comp) relocateComponent(c, comp, np, comp.rot);
+        });
         break;
       }
-      case "moveWire": {
-        const w = this.app.circuit.wires.find((x) => x.id === m.id);
-        if (!w) break;
-        const dx = Math.round(world.x / G - m.grab.x);
-        const dy = Math.round(world.y / G - m.grab.y);
-        const na = { x: m.startA.x + dx, y: m.startA.y + dy };
-        if (samePoint(na, w.a)) break;
+      case "moveWires": {
+        const delta = { x: Math.round(world.x / G - m.grab.x), y: Math.round(world.y / G - m.grab.y) };
+        if (samePoint(delta, m.last)) break;
         if (!m.moved) {
           m.moved = true;
           this.app.snapshot();
         }
-        w.a = na;
-        w.b = { x: m.startB.x + dx, y: m.startB.y + dy };
-        this.app.sim.rebuild();
+        m.last = delta;
+        this.app.preview(m.base, (c) => translateWires(c, m.ids, delta, { detach: m.detach }));
         break;
       }
       case "moveWireEnd": {
-        const w = this.app.circuit.wires.find((x) => x.id === m.id);
-        if (!w) break;
-        if (samePoint(grid, w[m.end])) break;
+        if (samePoint(grid, m.last)) break;
         if (!m.moved) {
           m.moved = true;
           this.app.snapshot();
         }
-        w[m.end] = grid;
-        this.app.sim.rebuild();
+        m.last = grid;
+        this.app.preview(m.base, (c) => moveWireEnd(c, m.id, m.end, grid, { group: m.group }));
         break;
       }
       case "drawWire": {
@@ -285,7 +556,7 @@ export class Editor {
         }
         break;
       }
-      case "moveWire":
+      case "moveWires":
       case "moveWireEnd":
         this.mode = { kind: "idle" };
         if (m.moved) this.app.afterChange();
@@ -305,93 +576,41 @@ export class Editor {
         break;
     }
     this.placeOnRelease = false;
+    this.updateCursorHit();
     this.updateCursor();
   }
-
-  /** true quand un glisser depuis la palette est en cours (dépôt au relâchement). */
-  placeOnRelease = false;
 
   private onDoubleClick(e: MouseEvent): void {
     const world = this.clientToWorld(e);
     const hit = hitTest(this.app, world, this.view.zoom);
     if (hit?.kind === "component") {
-      const input = document.querySelector<HTMLInputElement>("#props input[data-main]");
-      input?.focus();
-      input?.select();
+      this.app.select({ kind: "component", id: hit.id });
+      this.editSelected();
     }
   }
 
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
     const rect = this.canvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left;
-    const sy = e.clientY - rect.top;
-    const factor = Math.exp(-e.deltaY * 0.0015);
-    const nz = Math.min(4, Math.max(0.2, this.view.zoom * factor));
-    const k = nz / this.view.zoom;
-    this.view.pan = { x: sx - (sx - this.view.pan.x) * k, y: sy - (sy - this.view.pan.y) * k };
-    this.view.zoom = nz;
+    this.zoomBy(Math.exp(-e.deltaY * 0.0015), { x: e.clientX - rect.left, y: e.clientY - rect.top });
   }
+
+  // ---- Clavier ----
 
   private onKey(e: KeyboardEvent): void {
     if (isEditableTarget(e)) return;
     // Espace / Entrée sur un bouton ayant le focus : c'est le bouton qui agit.
     if ((e.key === " " || e.key === "Enter") && isButtonTarget(e)) return;
-    const ctrl = e.ctrlKey || e.metaKey;
-    if (ctrl && e.key.toLowerCase() === "z") {
+    if (this.keymap?.handle(e)) {
       e.preventDefault();
-      if (e.shiftKey) this.app.redo();
-      else this.app.undo();
+      this.updateCursorHit();
+      this.updateCursor();
       return;
     }
-    if (ctrl && e.key.toLowerCase() === "y") {
+    // Rotation pendant un placement à la souris (le fantôme tourne).
+    if ((e.key === "r" || e.key === "R") && this.mode.kind === "place") {
+      this.mode.rot = ((this.mode.rot + (e.key === "r" ? 1 : 3)) % 4) as Rot;
       e.preventDefault();
-      this.app.redo();
-      return;
-    }
-    if (ctrl && e.key.toLowerCase() === "d") {
-      e.preventDefault();
-      this.app.duplicateSelection();
-      return;
-    }
-    switch (e.key) {
-      case "Delete":
-      case "Backspace":
-        e.preventDefault();
-        this.app.deleteSelection();
-        break;
-      case "r":
-      case "R":
-        if (this.mode.kind === "place") this.mode.rot = ((this.mode.rot + 1) % 4) as Rot;
-        else this.app.rotateSelection();
-        break;
-      case "Escape":
-        this.cancel();
-        this.setTool("select");
-        this.app.select(null);
-        break;
-      case " ":
-        e.preventDefault();
-        this.app.toggleRunning();
-        break;
-      case "w":
-      case "W":
-        this.setTool(this.tool === "wire" ? "select" : "wire");
-        break;
-      case "v":
-      case "V":
-        this.setTool("select");
-        break;
-      case "f":
-      case "F":
-        this.zoomToFit();
-        break;
-      case "i":
-      case "I": {
-        const c = this.app.selectedComponent();
-        if (c) this.app.flipReference(c.id);
-        break;
-      }
     }
   }
 
@@ -401,7 +620,7 @@ export class Editor {
     if (m.kind === "place") cursor = "copy";
     else if (m.kind === "pan") cursor = m.moved ? "grabbing" : "default";
     else if (m.kind === "drawWire") cursor = "crosshair";
-    else if (m.kind === "moveComponent" || m.kind === "moveWire" || m.kind === "moveWireEnd") cursor = "move";
+    else if (m.kind === "moveComponent" || m.kind === "moveWires" || m.kind === "moveWireEnd") cursor = "move";
     else if (this.tool === "wire") cursor = "crosshair";
     else if (this.hover?.kind === "terminal" || this.hover?.kind === "wireEnd") cursor = "crosshair";
     else if (this.hover) cursor = "pointer";
@@ -417,16 +636,34 @@ export class Editor {
     if (Math.round(rect.width * dpr) !== this.canvas.width || Math.round(rect.height * dpr) !== this.canvas.height) this.resize();
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const m = this.mode;
+    // Survol : la souris si elle est sur le canevas, sinon l'élément sous le curseur clavier.
+    const mouseHover = m.kind === "idle" || m.kind === "drawWire" ? this.hover : null;
+    if (this.kcursor && !mouseHover) this.updateCursorHit();
+    const hover = mouseHover ?? (m.kind === "idle" ? this.khit : null);
+    const cursor = mouseHover ? this.cursorWorld : this.kcursor ? gridToWorld(this.kcursor) : null;
+    let wirePreview: Vec[] | null = null;
+    if (m.kind === "drawWire") wirePreview = this.app.routeWire(m.from, m.to);
+    else if (this.kwire && this.kcursor) wirePreview = this.app.routeWire(this.kwire, this.kcursor);
     this.renderer.draw(this.ctx, this.view, {
       width: rect.width,
       height: rect.height,
-      hover: m.kind === "idle" || m.kind === "drawWire" ? this.hover : null,
-      wirePreview: m.kind === "drawWire" ? { a: m.from, b: m.to } : null,
+      hover,
+      wirePreview,
       ghost: m.kind === "place" && m.pos ? { type: m.type, pos: m.pos, rot: m.rot } : null,
       frameDt: dt,
-      cursor: m.kind === "idle" ? this.cursorWorld : null,
+      cursor: m.kind === "idle" || m.kind === "drawWire" ? cursor : null,
+      kcursor: this.kcursor,
+      moveMode: this.moveMode,
     });
+    const label = this.modeLabel();
+    if (label !== this.lastModeLabel) {
+      this.lastModeLabel = label;
+      const el = document.getElementById("mode");
+      if (el) {
+        el.textContent = label;
+        el.dataset.mode = label.split(" ")[0].toLowerCase();
+      }
+    }
     requestAnimationFrame((t) => this.frame(t));
   }
 }
-

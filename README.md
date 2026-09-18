@@ -20,8 +20,24 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
   sources dépendantes (VCVS, VCCS, CCVS, CCCS, et sources v = f(i, v) / i = f(i, v) définies par une expression
   des grandeurs d'autres composants, par exemple `2*i_R1`), résistance, condensateur, bobine, diode, DEL, ampoule,
   interrupteur, masse, voltmètre, ampèremètre.
-- **Édition** : glisser-déposer depuis la palette, fils tirés depuis les terminaux, rotation (R), duplication (Ctrl+D),
-  suppression (Suppr), annuler / rétablir (Ctrl+Z / Ctrl+Y), zoom à la molette, sauvegarde automatique et export JSON.
+- **Édition** : glisser-déposer depuis la palette, fils tirés depuis les terminaux, rotation (r), duplication (Ctrl+D),
+  suppression (Suppr / x), annuler / rétablir (u / Ctrl+R), zoom à la molette, sauvegarde automatique et export JSON.
+- **Câblage élastique** : les fils sont des segments, mais l'éditeur les manipule comme un tout. Déplacer un composant
+  ré-achemine ses fils (orthogonaux, en contournant les autres composants et sans toucher les fils étrangers) ; glisser un
+  fil déplace tout le chemin de segments reliés, les voisins suivent et les terminaux quittés restent raccordés (Alt pour
+  détacher) ; glisser une extrémité déplace la jonction. Pivoter deux fois (r r) retourne un composant sur place : ses
+  fils changent simplement de terminal, sans court-circuit, et r r r r revient exactement à l'état initial. Les segments
+  alignés bout à bout sont fusionnés.
+- **Tout au clavier (façon vim)** : curseur de grille `h j k l` (majuscules ×5), `a` + lettre pose un composant sous le
+  curseur (`a r` résistance, `a v` pile, `a x e` VCVS…), `w` trace un fil (un second `w` pose le segment et enchaîne,
+  Entrée termine), `x` supprime sous le curseur, `r` / `R` pivotent, `i` inverse la référence, `t` bascule un
+  interrupteur, `e` ou Entrée ouvre la valeur (Échap ramène au canevas), `y` / `p` copient-collent, `.` répète, `m` passe en
+  mode déplacement (h j k l déplacent la sélection), Tab passe au composant suivant, `s` simule, `<` `>` règlent la
+  vitesse, `zz` centre, `f` ajuste, `0` `+` `-` zooment, `1` `2` `3` masquent les panneaux. La touche maître **Espace**
+  ouvre un menu dont les sous-menus (`a` ajouter, `e` édition, `s` simulation, `v` vue, `p` panneaux, `o` oscilloscope,
+  `f` fichier) s'affichent au fur et à mesure (panneau « which-key ») ; `:` ouvre une palette de commandes où l'on tape
+  le nom d'une action ou d'un composant (« R1 » le sélectionne) ; `?` liste tous les raccourcis. L'indicateur en bas du
+  canevas montre le mode courant (NORMAL, FIL, DÉPLACER, SAISIE, ATTENTE…).
 - **Simulation** : analyse nodale modifiée en transitoire (méthode trapézoïdale), diodes par Newton-Raphson,
   vitesse réglable de ×0,0001 à ×10 pour observer aussi bien un RC lent qu'un signal à 60 Hz.
 - **Animation** : les électrons se déplacent à une vitesse qui suit le courant sur une échelle logarithmique
@@ -41,7 +57,7 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
   d'un style (tonal, vif, expressif, neutre, monochrome…), d'un niveau de contraste et du mode clair / sombre /
   système. Le canevas, les icônes et l'oscilloscope suivent le thème. Bouton « palette » dans la barre supérieure.
 - **Panneaux masquables** : la palette, les propriétés et l'oscilloscope se masquent / affichent depuis la barre
-  supérieure, leur bouton de fermeture ou les touches 1, 2, 3 ; la disposition est mémorisée. Sur écran étroit, les
+  supérieure, leur bouton de fermeture ou les touches 1, 2, 3 (ou Espace p) ; la disposition est mémorisée. Sur écran étroit, les
   panneaux latéraux se superposent au canevas.
 - **Fonctions du temps** : tout champ accepte un nombre avec préfixe SI (`4.7k`, `100u`) ou une expression de `t`,
   par exemple `5*sin(2*pi*60*t)`, `12*step(t-2m)`, `5*pulse(t, 10m, 0.25)`, `1k+500*sin(2*pi*t)`.
@@ -55,14 +71,17 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
 
 ```
 src/sim/model.ts     types, définitions des composants (terminaux, propriétés)
-src/sim/netlist.ts   construction des nœuds (union-find), découpe des fils aux jonctions
+src/sim/netlist.ts   construction des nœuds (union-find), découpe des fils aux jonctions, fusion des segments alignés
+src/sim/wiring.ts    câblage : routage orthogonal avec obstacles, déplacement élastique des jonctions, chemins de fils
 src/sim/solver.ts    moteur MNA transitoire, sources dépendantes, courants dans les fils
 src/sim/expr.ts      évaluateur d'expressions de t
 src/sim/units.ts     préfixes SI
 src/sim/examples.ts  circuits d'exemple
 src/ui/app.ts        état global, historique, sauvegarde, boucle de simulation
 src/ui/renderer.ts   rendu canvas (symboles, électrons, étiquettes)
-src/ui/editor.ts     interactions souris / clavier
+src/ui/editor.ts     interactions souris / clavier (curseur de grille, glisser élastique, fil au clavier, modes)
+src/ui/keys.ts       séquences de touches, panneau which-key, palette de commandes, tableau d'aide
+src/ui/commands.ts   toutes les commandes et leurs raccourcis (touche maître Espace et sous-menus)
 src/ui/panels.ts     palette, barre d'outils, propriétés, oscilloscope, dialogue de thème
 src/ui/scope.ts      oscilloscope
 src/ui/theme.ts      thème dynamique Material 3 (couleur source → variables --md-sys-color-*, palette canvas)

@@ -4,7 +4,7 @@ import { EXAMPLES } from "../sim/examples";
 import { EXPR_HELP, evalValue, exprRefs, isValidExpr } from "../sim/expr";
 import { type ComponentType, DEFS, PALETTE_ORDER, displayName, isDependentSource } from "../sim/model";
 import { formatSI, parseSI } from "../sim/units";
-import type { App } from "./app";
+import { type App, SPEEDS } from "./app";
 import { $, showSnackbar } from "./dom";
 import type { Editor } from "./editor";
 import type { MdCheckbox, MdDialog, MdFilterChip, MdIconButton, MdMenu, MdOutlinedSelect, MdSlider, MdSwitch } from "./material";
@@ -147,19 +147,20 @@ function setupToolbar(app: App, editor: Editor): void {
   play.addEventListener("click", () => app.toggleRunning());
   reset.addEventListener("click", () => app.reset());
 
-  const SPEEDS = [1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10];
   speed.min = 0;
   speed.max = SPEEDS.length - 1;
   speed.step = 1;
   speed.value = SPEEDS.indexOf(1);
-  const updateSpeed = () => {
-    app.timeScale = SPEEDS[Number(speed.value)];
+  const showSpeed = () => {
     const text = `×${formatSI(app.timeScale, "", 2).replace(" ", "")}`;
     speedLabel.textContent = text;
     speed.valueLabel = text;
+    const idx = SPEEDS.indexOf(app.timeScale);
+    if (idx >= 0 && Number(speed.value) !== idx) speed.value = idx;
   };
-  speed.addEventListener("input", updateSpeed);
-  updateSpeed();
+  speed.addEventListener("input", () => app.setTimeScale(SPEEDS[Number(speed.value)]));
+  app.on("speed", showSpeed);
+  showSpeed();
 
   const updateTools = () => {
     toolSelect.selected = editor.tool === "select";
@@ -276,7 +277,9 @@ function setupProps(app: App): void {
     readings = null;
     if (w) {
       currentId = null;
-      root.innerHTML = `<h3>Fil</h3><p class="hint">Glissez une extrémité pour la déplacer. Suppr pour effacer.</p>`;
+      const n = app.selectedWireIds().length;
+      const what = n > 1 ? `Fil (${n} segments reliés)` : "Fil";
+      root.innerHTML = `<h3>${what}</h3><p class="hint">Glissez le fil pour le déplacer : les fils voisins suivent et les terminaux restent raccordés. Glissez une extrémité pour déplacer la jonction (Alt : ce seul fil). Alt+clic sélectionne un seul segment. Suppr ou x pour effacer.</p>`;
       readings = document.createElement("div");
       readings.className = "readings";
       root.appendChild(readings);
@@ -286,7 +289,8 @@ function setupProps(app: App): void {
     if (!c) {
       currentId = null;
       root.innerHTML = `<p class="hint">Sélectionnez un composant pour modifier ses valeurs et tracer ses courbes.</p>
-      <p class="hint">Astuces : glissez depuis un terminal pour tirer un fil · R pour pivoter · Suppr pour effacer · Espace pour lancer/arrêter · molette pour zoomer · cliquez un interrupteur pour le basculer.</p>`;
+      <p class="hint">Souris : glissez depuis un terminal pour tirer un fil · glissez un fil ou un composant, le câblage suit · cliquez un interrupteur pour le basculer · molette pour zoomer.</p>
+      <p class="hint">Clavier : h j k l déplacent le curseur · a puis une lettre pose un composant · w trace un fil · r pivote · x efface · s simule · Espace ouvre le menu · : la palette de commandes · ? l'aide.</p>`;
       return;
     }
     currentId = c.id;
@@ -321,6 +325,9 @@ function setupProps(app: App): void {
     nameInput.value = displayName(c);
     nameInput.addEventListener("change", () => {
       if (nameInput.value.trim() !== displayName(c)) app.setName(c.id, nameInput.value);
+    });
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") nameInput.blur();
     });
     fields.appendChild(nameInput);
 
@@ -526,6 +533,7 @@ function setupScope(app: App): void {
 
 function setupStatus(app: App): void {
   const el = $("#status");
+  const text = $("#status-text");
   const update = () => {
     const parts: string[] = [];
     parts.push(`t = ${formatSI(app.sim.time, "s", 4)}`);
@@ -542,7 +550,7 @@ function setupStatus(app: App): void {
       parts.push(`⚠ ${app.sim.warning}`);
       el.className = "warn";
     }
-    el.textContent = parts.join("   ·   ");
+    text.textContent = parts.join("   ·   ");
   };
   let last = 0;
   app.on("tick", () => {

@@ -93,10 +93,12 @@ function onSegmentInterior(p: Vec, w: Wire): boolean {
 
 /**
  * Normalise les fils : supprime les fils de longueur nulle et les doublons,
- * et coupe tout fil dont l'intérieur passe par un terminal ou une extrémité d'un autre fil
- * (pour que le contact crée une connexion).
+ * coupe tout fil dont l'intérieur passe par un terminal ou une extrémité d'un autre fil
+ * (pour que le contact crée une connexion), et fusionne les segments alignés bout à bout
+ * qui ne se rejoignent qu'entre eux (un fil droit reste un seul segment).
+ * `keep` : identifiants à conserver de préférence lors d'une fusion (sélection courante).
  */
-export function normalizeWires(circuit: Circuit): void {
+export function normalizeWires(circuit: Circuit, keep: Set<string> = new Set()): void {
   // points d'intérêt
   const points: Vec[] = [];
   const seen = new Set<string>();
@@ -141,7 +143,44 @@ export function normalizeWires(circuit: Circuit): void {
     keys.add(k1);
     out.push(w);
   }
-  circuit.wires = out;
+  circuit.wires = mergeCollinear({ components: circuit.components, wires: out }, keep);
+}
+
+/** Fusionne deux segments alignés qui se rejoignent en un point de degré 2 (sans terminal ni embranchement). */
+function mergeCollinear(circuit: Circuit, keep: Set<string>): Wire[] {
+  let wires = circuit.wires;
+  for (let guard = 0; guard < 500; guard++) {
+    const deg = connectionDegrees({ components: circuit.components, wires });
+    const byPoint = new Map<string, Wire[]>();
+    for (const w of wires) {
+      for (const p of [w.a, w.b]) {
+        const k = pointKey(p);
+        if (!byPoint.has(k)) byPoint.set(k, []);
+        byPoint.get(k)!.push(w);
+      }
+    }
+    let merged: { w1: Wire; w2: Wire; far1: Vec; far2: Vec } | null = null;
+    for (const [k, list] of byPoint) {
+      if (list.length !== 2 || deg.get(k) !== 2) continue;
+      const [w1, w2] = list;
+      const [x, y] = k.split(",").map(Number);
+      const p = { x, y };
+      const far1 = samePoint(w1.a, p) ? w1.b : w1.a;
+      const far2 = samePoint(w2.a, p) ? w2.b : w2.a;
+      const horizontal = far1.y === p.y && far2.y === p.y && (far1.x - p.x) * (far2.x - p.x) < 0;
+      const vertical = far1.x === p.x && far2.x === p.x && (far1.y - p.y) * (far2.y - p.y) < 0;
+      if (horizontal || vertical) {
+        merged = { w1, w2, far1, far2 };
+        break;
+      }
+    }
+    if (!merged) return wires;
+    const { w1, w2, far1, far2 } = merged;
+    const id = keep.has(w2.id) && !keep.has(w1.id) ? w2.id : w1.id;
+    wires = wires.filter((w) => w !== w1 && w !== w2);
+    wires.push({ id, a: { ...far1 }, b: { ...far2 } });
+  }
+  return wires;
 }
 
 /** Nombre de connexions (fils + terminaux) arrivant à chaque point. */

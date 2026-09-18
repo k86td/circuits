@@ -17,7 +17,7 @@
       </div>
 
       <div class="group">
-        <md-filled-tonal-button id="btn-play" title="Lancer / mettre en pause (Espace)">
+        <md-filled-tonal-button id="btn-play" title="Lancer / mettre en pause (s)">
           <md-icon slot="icon" id="play-icon">play_arrow</md-icon>
           <span id="play-label">Simuler</span>
         </md-filled-tonal-button>
@@ -87,7 +87,7 @@
 
       <section id="workspace">
         <canvas id="canvas" tabindex="0"></canvas>
-        <div id="status"></div>
+        <div id="status"><span id="mode" data-mode="normal" title="Mode courant (Échap : mode normal)">NORMAL</span><span id="status-text"></span></div>
       </section>
 
       <div id="scrim"></div>
@@ -191,19 +191,28 @@
     <md-dialog id="help">
       <div slot="headline">Aide</div>
       <div slot="content" class="help-content">
-        <h3>Construire un circuit</h3>
+        <h3>Construire un circuit à la souris</h3>
         <ul>
           <li><b>Ajouter un composant :</b> glissez-le depuis la palette, ou cliquez-le puis cliquez sur le canevas (R pour pivoter avant de poser, Maj pour en poser plusieurs).</li>
-          <li><b>Relier :</b> glissez depuis un terminal (petit cercle rouge = non connecté) jusqu'à un autre terminal ou point de grille. Un fil qui touche un terminal ou l'extrémité d'un autre fil est connecté.</li>
+          <li><b>Relier :</b> glissez depuis un terminal (petit cercle rouge = non connecté) jusqu'à un autre terminal ou point de grille. Le fil part le long de la patte du composant. Un fil qui touche un terminal ou l'extrémité d'un autre fil est connecté.</li>
           <li><b>Outil Fil (W) :</b> glissez n'importe où pour tracer un fil.</li>
-          <li><b>Modifier :</b> cliquez un composant pour voir ses propriétés. Double-clic pour éditer sa valeur. R pivote, Suppr efface, Ctrl+D duplique, Ctrl+Z annule.</li>
-          <li><b>Interrupteur :</b> cliquez dessus pour l'ouvrir / le fermer.</li>
-          <li><b>Vue :</b> molette pour zoomer, glisser le fond pour déplacer, F pour ajuster.</li>
-          <li><b>Panneaux :</b> 1, 2 et 3 masquent / affichent la palette, les propriétés et l'oscilloscope.</li>
+          <li><b>Déplacer :</b> glissez un composant, ses fils suivent (élastiques, toujours orthogonaux). Pivoter à 180° retourne le composant sur place : ses fils changent de terminal, sans court-circuit. Glissez un fil : tout le chemin de segments reliés se déplace, les fils voisins suivent et les terminaux quittés restent raccordés (Alt pour détacher). Glissez une extrémité de fil sélectionné pour déplacer la jonction.</li>
+          <li><b>Modifier :</b> cliquez un composant pour voir ses propriétés. Double-clic pour éditer sa valeur. Cliquez un interrupteur pour l'ouvrir / le fermer.</li>
+          <li><b>Vue :</b> molette pour zoomer, glisser le fond pour déplacer.</li>
         </ul>
+        <h3>Tout faire au clavier</h3>
+        <p>
+          Un curseur de grille apparaît dès que l'on appuie sur <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> (majuscules : ×5) ; il suit aussi les clics.
+          <kbd>a</kbd> puis une lettre pose un composant sous le curseur (<kbd>a</kbd> <kbd>r</kbd> : résistance), <kbd>w</kbd> commence un fil, un second <kbd>w</kbd> pose le segment et enchaîne, <kbd>Entrée</kbd> termine.
+          <kbd>Entrée</kbd> sur un composant le sélectionne, une deuxième fois ouvre sa valeur ; <kbd>Échap</kbd> ramène toujours au mode normal.
+          <kbd>m</kbd> passe en mode déplacement (h j k l déplacent la sélection), <kbd>Tab</kbd> passe au composant suivant.
+          La touche maître <kbd>Espace</kbd> ouvre un menu dont les sous-menus s'affichent au fur et à mesure ; <kbd>:</kbd> ouvre la palette de commandes où l'on tape le nom d'une action ou d'un composant.
+          L'indicateur en bas à gauche du canevas montre le mode courant.
+        </p>
+        <div id="key-help" class="key-help"></div>
         <h3>Simuler</h3>
         <ul>
-          <li>Espace lance / arrête. La vitesse règle le rapport temps simulé / temps réel : ralentissez pour observer un RC rapide ou un signal 60 Hz.</li>
+          <li><kbd>s</kbd> lance / arrête (ou Espace Espace), <kbd>S</kbd> remet le temps à zéro, <kbd>&lt;</kbd> et <kbd>&gt;</kbd> changent la vitesse. La vitesse règle le rapport temps simulé / temps réel : ralentissez pour observer un RC rapide ou un signal 60 Hz.</li>
           <li>Les points colorés sont les électrons : ils vont du − vers le + (option « sens conventionnel » pour l'inverse). Leur vitesse suit le courant.</li>
           <li>Les flèches pleines indiquent le sens du courant (conventionnel + → −, ou sens des électrons selon l'option) sur chaque fil et composant parcouru par un courant.</li>
           <li><b>Signes :</b> V et I d'un composant sont signés par rapport à sa <b>flèche de référence</b> (flèche creuse, + à la queue, − à la pointe), visible sur le composant sélectionné ou avec « Afficher V, I, P ». Un courant négatif circule à l'opposé de la référence. I (ou le bouton « Sens de réf. ») inverse la référence, comme on choisit un sens de courant avant d'analyser un circuit.</li>

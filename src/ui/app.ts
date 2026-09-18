@@ -12,13 +12,12 @@ import {
   autoName,
   cloneCircuit,
   createComponent,
-  createWire,
   pointKey,
   samePoint,
-  terminalPositions,
 } from "../sim/model";
 import { normalizeWires } from "../sim/netlist";
 import { type ComponentResult, Simulator } from "../sim/solver";
+import { addVec, relocateComponent, routeWire, translateWires, wirePath, polylineWires } from "../sim/wiring";
 import { Scope } from "./scope";
 
 export interface Options {
@@ -34,9 +33,16 @@ export interface Options {
   iRef: number;
 }
 
-export type Selection = { kind: "component"; id: string } | { kind: "wire"; id: string } | null;
+/**
+ * Sélection : un composant, ou un fil. Pour un fil, `ids` est le chemin complet (segments reliés bout à bout
+ * sans embranchement) auquel appartient le segment cliqué `id` ; avec `single`, seul ce segment est retenu.
+ */
+export type Selection = { kind: "component"; id: string } | { kind: "wire"; id: string; ids: string[]; single?: boolean } | null;
 
-export type AppEvent = "change" | "select" | "tick" | "run" | "options";
+export type AppEvent = "change" | "select" | "tick" | "run" | "options" | "speed";
+
+/** Vitesses de simulation proposées (temps simulé / temps réel). */
+export const SPEEDS = [1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10];
 
 const STORAGE_KEY = "circuits.autosave.v1";
 const OPTIONS_KEY = "circuits.options.v1";
@@ -61,9 +67,14 @@ export class App {
     showReadings: false,
     iRef: 5e-3,
   };
+  /** Composant copié (y / Ctrl+C), collé avec p / Ctrl+V. */
+  clipboard: Component | null = null;
   private undoStack: string[] = [];
   private redoStack: string[] = [];
   private listeners = new Map<AppEvent, Set<() => void>>();
+  private coalesce: { tag: string; time: number } | null = null;
+  /** Rotations successives d'un même composant : on repart de la géométrie d'avant la première (r r = 180° sur place). */
+  private rotateBase: { id: string; circuit: string; rot: Rot; turns: number } | null = null;
 
   constructor() {
     this.circuit = { components: [], wires: [] };
@@ -170,6 +181,32 @@ export class App {
     this.undoStack.push(JSON.stringify(this.circuit));
     if (this.undoStack.length > 100) this.undoStack.shift();
     this.redoStack = [];
+    this.coalesce = null;
+    this.rotateBase = null;
+  }
+
+  /**
+   * Instantané regroupé : des modifications répétées de même nature (déplacement au clavier, pas à pas)
+   * ne créent qu'une seule entrée d'historique tant qu'elles se suivent de moins de `windowMs`.
+   * Renvoie vrai si un nouvel instantané a été pris.
+   */
+  private snapshotCoalesced(tag: string, windowMs = 1000): boolean {
+    const now = performance.now();
+    if (this.coalesce && this.coalesce.tag === tag && now - this.coalesce.time < windowMs) {
+      this.coalesce.time = now;
+      return false;
+    }
+    this.snapshot();
+    this.coalesce = { tag, time: now };
+    return true;
+  }
+
+  canUndo(): boolean {
+    return this.undoStack.length > 0;
+  }
+
+  canRedo(): boolean {
+    return this.redoStack.length > 0;
   }
 
   undo(): void {
@@ -196,14 +233,37 @@ export class App {
 
   /** À appeler après toute mutation du circuit. */
   afterChange(): void {
-    normalizeWires(this.circuit);
+    const sel = this.selection;
+    normalizeWires(this.circuit, new Set(sel?.kind === "wire" ? sel.ids : []));
     this.sim.circuit = this.circuit;
     this.sim.rebuild();
     this.sim.computeWireCurrents();
     this.scope.prune(this.circuit);
     this.scope.flipped = new Set(this.circuit.components.filter((c) => c.flipRef).map((c) => c.id));
+    // La normalisation peut avoir fusionné ou coupé des fils : on recalcule le chemin sélectionné.
+    if (sel?.kind === "wire") {
+      if (!this.circuit.wires.some((w) => w.id === sel.id)) {
+        this.selection = null;
+        this.emit("select");
+      } else sel.ids = sel.single ? [sel.id] : wirePath(this.circuit, sel.id);
+    } else if (sel?.kind === "component" && !this.circuit.components.some((c) => c.id === sel.id)) {
+      this.selection = null;
+      this.emit("select");
+    }
     this.autosave();
     this.emit("change");
+  }
+
+  /**
+   * Aperçu pendant un glisser : repart de `base` (état au début du geste), applique la modification et
+   * recalcule la simulation, sans normaliser ni enregistrer (voir afterChange à la fin du geste).
+   */
+  preview(base: Circuit, fn: (c: Circuit) => void): void {
+    this.circuit = cloneCircuit(base);
+    fn(this.circuit);
+    this.sim.circuit = this.circuit;
+    this.sim.rebuild();
+    this.sim.computeWireCurrents();
   }
 
   /** Signe appliqué à V et I d'un composant selon son sens de référence (+1 : terminal 0 → 1, −1 : inversé). */
@@ -233,13 +293,24 @@ export class App {
   // ---- Sélection ----
 
   select(sel: Selection): void {
+    if (sel?.kind === "wire") sel = { kind: "wire", id: sel.id, ids: sel.single ? [sel.id] : wirePath(this.circuit, sel.id), single: sel.single };
     if (
       (sel === null && this.selection === null) ||
-      (sel && this.selection && sel.kind === this.selection.kind && sel.id === this.selection.id)
+      (sel && this.selection && sel.kind === this.selection.kind && sel.id === this.selection.id && (sel.kind !== "wire" || sel.single === (this.selection as { single?: boolean }).single))
     )
       return;
     this.selection = sel;
     this.emit("select");
+  }
+
+  /** Sélectionne un fil : le chemin complet, ou ce seul segment. */
+  selectWire(id: string, single = false): void {
+    this.select({ kind: "wire", id, ids: [], single });
+  }
+
+  /** Identifiants des fils sélectionnés (chemin complet). */
+  selectedWireIds(): string[] {
+    return this.selection?.kind === "wire" ? this.selection.ids : [];
   }
 
   selectedComponent(): Component | undefined {
@@ -268,16 +339,16 @@ export class App {
     return c;
   }
 
-  /** Ajoute un fil en L (horizontal puis vertical) entre deux points de grille. */
+  /** Trajet qu'aurait un nouveau fil entre deux points (aperçu et création). */
+  routeWire(a: Vec, b: Vec): Vec[] {
+    return routeWire(this.circuit, a, b);
+  }
+
+  /** Ajoute un fil orthogonal entre deux points de grille (le long des pattes si ce sont des terminaux). */
   addWire(a: Vec, b: Vec): void {
     if (samePoint(a, b)) return;
     this.snapshot();
-    if (a.x !== b.x && a.y !== b.y) {
-      const corner = { x: b.x, y: a.y };
-      this.circuit.wires.push(createWire(a, corner), createWire(corner, b));
-    } else {
-      this.circuit.wires.push(createWire(a, b));
-    }
+    this.circuit.wires.push(...polylineWires(this.routeWire(a, b)));
     this.afterChange();
   }
 
@@ -288,46 +359,90 @@ export class App {
       const id = this.selection.id;
       this.circuit.components = this.circuit.components.filter((c) => c.id !== id);
     } else {
-      const id = this.selection.id;
-      this.circuit.wires = this.circuit.wires.filter((w) => w.id !== id);
+      const ids = new Set(this.selection.ids);
+      this.circuit.wires = this.circuit.wires.filter((w) => !ids.has(w.id));
     }
     this.selection = null;
     this.afterChange();
     this.emit("select");
   }
 
-  rotateSelection(): void {
-    const c = this.selectedComponent();
+  /**
+   * Pivote le composant sélectionné (ou celui donné) de 90°, horaire par défaut, en gardant ses fils raccordés.
+   * Des rotations rapprochées du même composant sont recalculées depuis la géométrie d'avant la première :
+   * r r retourne le composant sur place (ses fils changent de terminal), r r r r le remet exactement.
+   */
+  rotateSelection(dir: 1 | -1 = 1, id?: string): void {
+    const c = id ? this.componentById(id) : this.selectedComponent();
     if (!c) return;
+    const fresh = this.snapshotCoalesced(`rotate:${c.id}`, 2500);
+    if (fresh || !this.rotateBase || this.rotateBase.id !== c.id) {
+      this.rotateBase = { id: c.id, circuit: JSON.stringify(this.circuit), rot: c.rot, turns: 0 };
+    }
+    const base = this.rotateBase;
+    base.turns += dir;
+    this.circuit = JSON.parse(base.circuit);
+    const comp = this.componentById(c.id)!;
+    relocateComponent(this.circuit, comp, comp.pos, ((((base.rot + base.turns) % 4) + 4) % 4) as Rot);
+    this.afterChange();
+    this.rotateBase = base;
+  }
+
+  /** Déplace un composant (ses fils suivent, re-routés orthogonalement). */
+  moveComponent(id: string, pos: Vec): void {
+    const c = this.componentById(id);
+    if (!c || samePoint(c.pos, pos)) return;
     this.snapshot();
-    const tBefore = terminalPositions(c);
-    c.rot = ((c.rot + 1) % 4) as Rot;
-    const tAfter = terminalPositions(c);
-    this.moveAttachedWires(tBefore, tAfter);
+    relocateComponent(this.circuit, c, pos, c.rot);
+    this.afterChange();
+  }
+
+  /** Déplace la sélection (composant ou chemin de fils) d'un pas de grille ; les déplacements rapprochés forment une seule annulation. */
+  nudgeSelection(delta: Vec): void {
+    const sel = this.selection;
+    if (!sel) return;
+    if (sel.kind === "component") {
+      const c = this.componentById(sel.id);
+      if (!c) return;
+      this.snapshotCoalesced(`nudge:${c.id}`);
+      relocateComponent(this.circuit, c, addVec(c.pos, delta), c.rot);
+    } else {
+      this.snapshotCoalesced(`nudge:${sel.id}`);
+      translateWires(this.circuit, sel.ids, delta);
+    }
     this.afterChange();
   }
 
   duplicateSelection(): void {
     const c = this.selectedComponent();
     if (!c) return;
+    this.placeCopy(c, { x: c.pos.x + 2, y: c.pos.y + 2 });
+  }
+
+  /** Copie le composant sélectionné (ou donné) dans le presse-papiers interne. */
+  copySelection(id?: string): boolean {
+    const c = id ? this.componentById(id) : this.selectedComponent();
+    if (!c) return false;
+    this.clipboard = cloneCircuit({ components: [c], wires: [] }).components[0];
+    return true;
+  }
+
+  /** Colle le composant du presse-papiers à la position donnée. */
+  paste(pos: Vec): boolean {
+    if (!this.clipboard) return false;
+    this.placeCopy(this.clipboard, pos);
+    return true;
+  }
+
+  private placeCopy(src: Component, pos: Vec): void {
     this.snapshot();
-    const copy = cloneCircuit({ components: [c], wires: [] }).components[0];
-    copy.id = createComponent(c.type, c.pos).id;
-    copy.name = autoName(this.circuit, c.type);
-    copy.pos = { x: c.pos.x + 2, y: c.pos.y + 2 };
+    const copy = cloneCircuit({ components: [src], wires: [] }).components[0];
+    copy.id = createComponent(src.type, pos).id;
+    copy.name = autoName(this.circuit, src.type);
+    copy.pos = { ...pos };
     this.circuit.components.push(copy);
     this.afterChange();
     this.select({ kind: "component", id: copy.id });
-  }
-
-  /** Déplace les extrémités de fils qui étaient sur d'anciens terminaux vers les nouveaux. */
-  moveAttachedWires(before: Vec[], after: Vec[]): void {
-    for (const w of this.circuit.wires) {
-      for (const end of ["a", "b"] as const) {
-        const idx = before.findIndex((p) => samePoint(p, w[end]));
-        if (idx >= 0) w[end] = { ...after[idx] };
-      }
-    }
   }
 
   setProp(id: string, key: string, value: PropValue): void {
@@ -365,6 +480,20 @@ export class App {
   setRunning(v: boolean): void {
     this.running = v;
     this.emit("run");
+  }
+
+  setTimeScale(v: number): void {
+    if (v === this.timeScale) return;
+    this.timeScale = v;
+    this.emit("speed");
+  }
+
+  /** Passe à la vitesse de simulation suivante (+1) ou précédente (−1) de la liste SPEEDS. */
+  stepTimeScale(dir: 1 | -1): void {
+    let idx = SPEEDS.findIndex((s) => s >= this.timeScale);
+    if (idx < 0) idx = SPEEDS.length - 1;
+    idx = Math.max(0, Math.min(SPEEDS.length - 1, idx + dir));
+    this.setTimeScale(SPEEDS[idx]);
   }
 
   toggleRunning(): void {
