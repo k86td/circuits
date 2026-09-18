@@ -159,3 +159,79 @@ describe("Simulator", () => {
     }
   });
 });
+
+describe("sources commandées par expression", () => {
+  function series(exprValue: string, type: "vexpr" | "iexpr" = "vexpr"): Circuit {
+    // Pile 10 V → R1 1 kΩ → source exprimée (verticale, + en haut) → retour à la pile ; masse sur le fil du bas.
+    const battery = createComponent("battery", { x: 0, y: 3 }, 1);
+    battery.name = "V1";
+    battery.props.V = 10;
+    const r1 = createComponent("resistor", { x: 4, y: 0 }, 0);
+    r1.name = "R1";
+    r1.props.R = 1000;
+    const src = createComponent(type, { x: 8, y: 3 }, 1);
+    src.name = "E1";
+    src.props[type === "vexpr" ? "V" : "I"] = exprValue;
+    const gnd = createComponent("ground", { x: 3, y: 7 }, 0);
+    const circuit: Circuit = {
+      components: [battery, r1, src, gnd],
+      wires: [
+        createWire({ x: 0, y: 1 }, { x: 0, y: 0 }),
+        createWire({ x: 0, y: 0 }, { x: 2, y: 0 }),
+        createWire({ x: 6, y: 0 }, { x: 8, y: 0 }),
+        createWire({ x: 8, y: 0 }, { x: 8, y: 1 }),
+        createWire({ x: 8, y: 5 }, { x: 8, y: 6 }),
+        createWire({ x: 8, y: 6 }, { x: 0, y: 6 }),
+        createWire({ x: 0, y: 6 }, { x: 0, y: 5 }),
+      ],
+    };
+    normalizeWires(circuit);
+    return circuit;
+  }
+
+  it("résout l'exemple v = 2000·i_R1 (source dépendante sans fils de commande)", () => {
+    const sim = new Simulator(example("expr"));
+    expect(sim.error).toBeNull();
+    expect(sim.warning).toBeNull();
+    expect(byType(sim, "resistor", 0).r.i).toBeCloseTo(0.01, 9);
+    expect(byType(sim, "vexpr").r.v).toBeCloseTo(20, 9);
+    expect(byType(sim, "resistor", 1).r.i).toBeCloseTo(0.01, 9);
+  });
+
+  it("résout exactement une rétroaction linéaire (v = 500·i_R1 en série)", () => {
+    // KVL : 10 = 1000·i + 500·i → i = 6,667 mA (un point fixe naïf divergerait pour un gain de boucle > 1)
+    const sim = new Simulator(series("500*i_R1"));
+    expect(sim.error).toBeNull();
+    expect(sim.warning).toBeNull();
+    expect(byType(sim, "resistor").r.i).toBeCloseTo(10 / 1500, 9);
+    expect(byType(sim, "vexpr").r.v).toBeCloseTo(500 * (10 / 1500), 9);
+  });
+
+  it("converge sur une dépendance non linéaire (v = 1e5·i_R1²)", () => {
+    // 10 = 1000·i + 1e5·i² → i = (−1000 + √(1e6 + 4e6)) / 2e5
+    const sim = new Simulator(series("1e5*i_R1^2"));
+    expect(sim.error).toBeNull();
+    expect(sim.warning).toBeNull();
+    const i = (-1000 + Math.sqrt(1e6 + 4e6)) / 2e5;
+    expect(byType(sim, "resistor").r.i).toBeCloseTo(i, 8);
+  });
+
+  it("suit le sens de référence du composant référencé et accepte la multiplication implicite", () => {
+    const circuit = series("500 i_R1");
+    circuit.components.find((c) => c.name === "R1")!.flipRef = true;
+    // i_R1 vaut maintenant −i : 10 = 1000·i − 500·i → i = 20 mA
+    const sim = new Simulator(circuit);
+    expect(sim.error).toBeNull();
+    expect(byType(sim, "resistor").r.i).toBeCloseTo(0.02, 9);
+  });
+
+  it("résout une source de courant exprimée en série avec R1 (i = 2m + v_R1/2000)", () => {
+    // Le courant de la boucle est imposé par la source : i = 2m + v_R1/2000 avec v_R1 = 1000·i
+    // → i = 2m + i/2 → i = 4 mA, v_R1 = 4 V (à la conductance de fuite GMIN près).
+    const sim = new Simulator(series("2m + v_R1/2000", "iexpr"));
+    expect(sim.error).toBeNull();
+    expect(sim.warning).toBeNull();
+    expect(byType(sim, "resistor").r.i).toBeCloseTo(0.004, 9);
+    expect(byType(sim, "resistor").r.v).toBeCloseTo(4, 6);
+  });
+});

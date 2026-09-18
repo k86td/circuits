@@ -2,6 +2,7 @@
 
 import { type ComponentType, type Rot, type Vec, samePoint, terminalPositions } from "../sim/model";
 import type { App } from "./app";
+import { isButtonTarget, isEditableTarget } from "./dom";
 import { type Hit, type Renderer, type View, G, hitTest, screenToWorld, worldToGrid } from "./renderer";
 
 export type Tool = "select" | "wire";
@@ -333,8 +334,9 @@ export class Editor {
   }
 
   private onKey(e: KeyboardEvent): void {
-    const t = e.target as HTMLElement;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+    if (isEditableTarget(e)) return;
+    // Espace / Entrée sur un bouton ayant le focus : c'est le bouton qui agit.
+    if ((e.key === " " || e.key === "Enter") && isButtonTarget(e)) return;
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && e.key.toLowerCase() === "z") {
       e.preventDefault();
@@ -384,6 +386,12 @@ export class Editor {
       case "F":
         this.zoomToFit();
         break;
+      case "i":
+      case "I": {
+        const c = this.app.selectedComponent();
+        if (c) this.app.flipReference(c.id);
+        break;
+      }
     }
   }
 

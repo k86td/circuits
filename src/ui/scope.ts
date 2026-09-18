@@ -3,6 +3,7 @@
 import { type Circuit, displayName } from "../sim/model";
 import type { ComponentResult } from "../sim/solver";
 import { formatSI } from "../sim/units";
+import { theme } from "./theme";
 
 export type Quantity = "v" | "i" | "p" | "r";
 
@@ -13,13 +14,13 @@ export const QUANTITY_INFO: Record<Quantity, { label: string; unit: string; long
   r: { label: "R", unit: "Ω", long: "Résistance (V/I)" },
 };
 
-const COLORS = ["#facc15", "#22d3ee", "#f472b6", "#4ade80", "#fb923c", "#a78bfa", "#f87171", "#2dd4bf"];
 
 export interface Trace {
   key: string;
   compId: string;
   q: Quantity;
-  color: string;
+  /** Indice dans la palette de traces du thème (la couleur suit le mode clair / sombre). */
+  colorIndex: number;
   t: Float64Array;
   y: Float64Array;
   n: number;
@@ -33,6 +34,8 @@ export class Scope {
   /** Largeur de la fenêtre affichée (s). */
   window = 0.1;
   capacity = 6000;
+  /** Composants dont le sens de référence est inversé (V et I échantillonnés changent de signe). */
+  flipped = new Set<string>();
   private lastSample = -Infinity;
 
   has(compId: string, q: Quantity): boolean {
@@ -45,13 +48,16 @@ export class Scope {
       this.traces.splice(idx, 1);
       return;
     }
-    const used = new Set(this.traces.map((t) => t.color));
-    const color = COLORS.find((c) => !used.has(c)) ?? COLORS[this.traces.length % COLORS.length];
+    const n = theme.canvas.scopeTraces.length;
+    const used = new Set(this.traces.map((t) => t.colorIndex));
+    let colorIndex = 0;
+    while (colorIndex < n && used.has(colorIndex)) colorIndex++;
+    if (colorIndex >= n) colorIndex = this.traces.length % n;
     this.traces.push({
       key: `${compId}:${q}`,
       compId,
       q,
-      color,
+      colorIndex,
       t: new Float64Array(this.capacity),
       y: new Float64Array(this.capacity),
       n: 0,
@@ -90,8 +96,9 @@ export class Scope {
       const r = results.get(tr.compId);
       let v = NaN;
       if (r) {
-        if (tr.q === "v") v = r.v;
-        else if (tr.q === "i") v = r.i;
+        const s = this.flipped.has(tr.compId) ? -1 : 1;
+        if (tr.q === "v") v = s * r.v;
+        else if (tr.q === "i") v = s * r.i;
         else if (tr.q === "p") v = r.p;
         else v = Math.abs(r.i) > 1e-12 ? r.v / r.i : NaN;
       }
@@ -114,10 +121,13 @@ export class Scope {
     const t1 = Math.max(now, this.window);
     const t0 = t1 - this.window;
 
+    const pal = theme.canvas;
+    const traceColor = (tr: Trace) => pal.scopeTraces[tr.colorIndex % pal.scopeTraces.length];
+
     // Fond + grille
-    ctx.fillStyle = "#0b1020";
+    ctx.fillStyle = pal.scopeBg;
     ctx.fillRect(padL, padT, pw, ph);
-    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.strokeStyle = pal.scopeGrid;
     ctx.lineWidth = 1;
     for (let k = 0; k <= 10; k++) {
       const x = padL + (pw * k) / 10;
@@ -133,8 +143,8 @@ export class Scope {
       ctx.lineTo(padL + pw, y);
       ctx.stroke();
     }
-    ctx.fillStyle = "#94a3b8";
-    ctx.font = "11px system-ui, sans-serif";
+    ctx.fillStyle = pal.scopeText;
+    ctx.font = "11px Roboto, system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     for (let k = 0; k <= 10; k += 2) {
@@ -143,8 +153,8 @@ export class Scope {
     }
 
     if (this.traces.length === 0) {
-      ctx.fillStyle = "#64748b";
-      ctx.font = "13px system-ui, sans-serif";
+      ctx.fillStyle = pal.scopeMuted;
+      ctx.font = "13px Roboto, system-ui, sans-serif";
       ctx.textBaseline = "middle";
       ctx.fillText("Sélectionnez un composant puis cochez V, I, P ou R pour tracer une courbe.", padL + pw / 2, padT + ph / 2);
       return;
@@ -168,7 +178,7 @@ export class Scope {
 
     // Ligne zéro
     const yMid = padT + ph / 2;
-    ctx.strokeStyle = "rgba(255,255,255,0.25)";
+    ctx.strokeStyle = pal.scopeZero;
     ctx.beginPath();
     ctx.moveTo(padL, yMid);
     ctx.lineTo(padL + pw, yMid);
@@ -181,7 +191,7 @@ export class Scope {
     ctx.clip();
     for (const tr of this.traces) {
       const scale = scaleByUnit.get(QUANTITY_INFO[tr.q].unit) ?? 1;
-      ctx.strokeStyle = tr.color;
+      ctx.strokeStyle = traceColor(tr);
       ctx.lineWidth = 1.6;
       ctx.beginPath();
       let pen = false;
@@ -207,11 +217,11 @@ export class Scope {
 
     // Axes : une échelle par unité (gauche pour la première, droite pour la seconde)
     const units = [...scaleByUnit.keys()];
-    ctx.font = "11px system-ui, sans-serif";
+    ctx.font = "11px Roboto, system-ui, sans-serif";
     ctx.textBaseline = "middle";
     units.slice(0, 2).forEach((u, side) => {
       const scale = scaleByUnit.get(u)!;
-      ctx.fillStyle = "#cbd5e1";
+      ctx.fillStyle = pal.scopeText;
       ctx.textAlign = side === 0 ? "right" : "left";
       const x = side === 0 ? padL - 6 : padL + pw + 6;
       for (let k = -4; k <= 4; k += 2) {
@@ -230,11 +240,12 @@ export class Scope {
       const info = QUANTITY_INFO[tr.q];
       const last = tr.n > 0 ? tr.y[(tr.head - 1 + this.capacity) % this.capacity] : NaN;
       const text = `${info.label}(${c ? displayName(c) : "?"}) = ${formatSI(last, info.unit)}`;
-      ctx.fillStyle = "rgba(11,16,32,0.8)";
+      ctx.fillStyle = pal.scopeLegendBg;
       const tw = ctx.measureText(text).width;
       ctx.fillRect(lx - 3, ly - 2, tw + 16, 16);
-      ctx.fillStyle = tr.color;
+      ctx.fillStyle = traceColor(tr);
       ctx.fillRect(lx, ly + 3, 8, 8);
+      ctx.fillStyle = pal.scopeText;
       ctx.fillText(text, lx + 12, ly);
       lx += tw + 24;
     }

@@ -1,0 +1,3 @@
+Ces icônes proviennent de Material Symbols (Google), distribuées sous licence Apache 2.0 :
+https://github.com/google/material-design-icons — https://www.apache.org/licenses/LICENSE-2.0
+Fichiers copiés depuis le paquet npm @material-symbols/svg-400 (style « outlined », graisse 400).

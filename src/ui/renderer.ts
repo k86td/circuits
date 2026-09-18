@@ -11,12 +11,14 @@ import {
   mainValue,
   pointKey,
   rotateVec,
+  samePoint,
   terminalPositions,
 } from "../sim/model";
 import { connectionDegrees } from "../sim/netlist";
 import { evalValue, isTimeDependent } from "../sim/expr";
 import { formatSI } from "../sim/units";
 import type { App } from "./app";
+import { type CanvasPalette, theme, withAlpha } from "./theme";
 
 /** Pixels par unité de grille (zoom 1). */
 export const G = 20;
@@ -43,19 +45,10 @@ export interface DrawExtra {
   cursor: Vec | null;
 }
 
-const COL = {
-  wire: "#c7d2e0",
-  body: "#e2e8f0",
-  bg: "#0f172a",
-  grid: "rgba(148,163,184,0.18)",
-  select: "rgba(56,189,248,0.35)",
-  hover: "rgba(56,189,248,0.18)",
-  electron: "#38bdf8",
-  electronConv: "#fbbf24",
-  label: "#cbd5e1",
-  reading: "#7dd3fc",
-  meter: "#fde68a",
-};
+/** Couleurs du rendu, dérivées du thème Material courant (voir theme.ts). */
+function COL(): CanvasPalette {
+  return theme.canvas;
+}
 
 export function worldToScreen(p: Vec, view: View): Vec {
   return { x: p.x * view.zoom + view.pan.x, y: p.y * view.zoom + view.pan.y };
@@ -145,10 +138,11 @@ export function hitTest(app: App, p: Vec, zoom: number): Hit | null {
 
 function voltageColor(v: number, vmax: number): string {
   const x = Math.max(-1, Math.min(1, v / vmax));
+  const pal = COL();
   if (x >= 0) {
-    return mix("#94a3b8", "#f87171", x);
+    return mix(pal.voltageNeutral, pal.voltagePos, x);
   }
-  return mix("#94a3b8", "#60a5fa", -x);
+  return mix(pal.voltageNeutral, pal.voltageNeg, -x);
 }
 
 function mix(a: string, b: string, t: number): string {
@@ -168,19 +162,19 @@ export function drawSymbol(
   c: Component,
   opts: { leadColors?: string[]; glow?: number; scale?: number } = {},
 ): void {
-  const lc = opts.leadColors ?? [COL.wire, COL.wire, COL.wire, COL.wire];
+  const lc = opts.leadColors ?? [COL().wire, COL().wire, COL().wire, COL().wire];
   ctx.lineWidth = 2;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  ctx.strokeStyle = COL.body;
-  ctx.fillStyle = COL.body;
+  ctx.strokeStyle = COL().body;
+  ctx.fillStyle = COL().body;
   const lead = (x1: number, y1: number, x2: number, y2: number, color: string) => {
     ctx.strokeStyle = color;
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
     ctx.stroke();
-    ctx.strokeStyle = COL.body;
+    ctx.strokeStyle = COL().body;
   };
   switch (c.type) {
     case "resistor":
@@ -270,12 +264,12 @@ export function drawSymbol(
     case "ammeter": {
       lead(-40, 0, -14, 0, lc[0]);
       lead(14, 0, 40, 0, lc[1]);
-      ctx.fillStyle = COL.bg;
+      ctx.fillStyle = COL().bg;
       ctx.beginPath();
       ctx.arc(0, 0, 14, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = COL.body;
+      ctx.fillStyle = COL().body;
       if (c.type === "acsource") {
         ctx.beginPath();
         for (let k = 0; k <= 20; k++) {
@@ -307,6 +301,40 @@ export function drawSymbol(
       }
       break;
     }
+    case "vexpr":
+    case "iexpr": {
+      // Source dépendante à deux terminaux : losange, valeur donnée par une expression
+      lead(-40, 0, -14, 0, lc[0]);
+      lead(14, 0, 40, 0, lc[1]);
+      ctx.fillStyle = COL().bg;
+      ctx.beginPath();
+      ctx.moveTo(-14, 0);
+      ctx.lineTo(0, -14);
+      ctx.lineTo(14, 0);
+      ctx.lineTo(0, 14);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = COL().body;
+      if (c.type === "vexpr") {
+        plus(ctx, -22, -10);
+        ctx.beginPath();
+        ctx.moveTo(19, -10);
+        ctx.lineTo(25, -10);
+        ctx.stroke();
+        text(ctx, "ƒ", 0, 0, 11, c.rot);
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(-7, 0);
+        ctx.lineTo(7, 0);
+        ctx.moveTo(2, -5);
+        ctx.lineTo(7, 0);
+        ctx.lineTo(2, 5);
+        ctx.stroke();
+        text(ctx, "ƒ", 0, -21, 9, c.rot);
+      }
+      break;
+    }
     case "diode":
     case "led": {
       lead(-40, 0, -10, 0, lc[0]);
@@ -321,7 +349,7 @@ export function drawSymbol(
         ctx.arc(0, 0, 12 + 26 * g, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.fillStyle = c.type === "led" ? (g > 0.02 ? "#fca5a5" : "#7f1d1d") : COL.body;
+      ctx.fillStyle = c.type === "led" ? (g > 0.02 ? "#fca5a5" : "#7f1d1d") : COL().body;
       ctx.beginPath();
       ctx.moveTo(-10, -10);
       ctx.lineTo(10, 0);
@@ -403,7 +431,7 @@ export function drawSymbol(
       lead(20, -20, 20, -16, lc[0]);
       lead(40, 20, 20, 20, lc[1]);
       lead(20, 20, 20, 16, lc[1]);
-      ctx.fillStyle = COL.bg;
+      ctx.fillStyle = COL().bg;
       ctx.beginPath();
       ctx.moveTo(20, -16);
       ctx.lineTo(36, 0);
@@ -412,7 +440,7 @@ export function drawSymbol(
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = COL.body;
+      ctx.fillStyle = COL().body;
       if (c.type === "vcvs" || c.type === "ccvs") {
         plus(ctx, 20, -8);
         ctx.beginPath();
@@ -429,7 +457,7 @@ export function drawSymbol(
         ctx.stroke();
       }
       ctx.lineWidth = 1;
-      ctx.strokeStyle = "rgba(226,232,240,0.5)";
+      ctx.strokeStyle = withAlpha(COL().body, 0.5);
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(-14, 0);
@@ -490,7 +518,7 @@ export class Renderer {
     const app = this.app;
     const { width, height } = extra;
     ctx.save();
-    ctx.fillStyle = COL.bg;
+    ctx.fillStyle = COL().bg;
     ctx.fillRect(0, 0, width, height);
     this.drawGrid(ctx, view, width, height);
 
@@ -500,9 +528,9 @@ export class Renderer {
     const sim = app.sim;
     const vmax = Math.max(1e-3, ...Array.from(sim.nodeVoltages).map(Math.abs));
     const colorOfPoint = (p: Vec): string => {
-      if (!app.options.voltageColors || sim.error) return COL.wire;
+      if (!app.options.voltageColors || sim.error) return COL().wire;
       const v = sim.voltageAt(pointKey(p));
-      return v === null ? COL.wire : voltageColor(v, vmax);
+      return v === null ? COL().wire : voltageColor(v, vmax);
     };
 
     // Fils
@@ -513,7 +541,7 @@ export class Renderer {
       const isSel = sel?.kind === "wire" && sel.id === w.id;
       const isHov = extra.hover?.kind === "wire" && extra.hover.id === w.id;
       if (isSel || isHov) {
-        ctx.strokeStyle = isSel ? COL.select : COL.hover;
+        ctx.strokeStyle = isSel ? COL().select : COL().hover;
         ctx.lineWidth = 10;
         ctx.lineCap = "round";
         ctx.beginPath();
@@ -547,7 +575,7 @@ export class Renderer {
       const isHov = extra.hover?.kind === "component" && extra.hover.id === c.id;
       if (isSel || isHov) {
         const b = componentBounds(c);
-        ctx.fillStyle = isSel ? COL.select : COL.hover;
+        ctx.fillStyle = isSel ? COL().select : COL().hover;
         roundRect(ctx, b.x - 4, b.y - 4, b.w + 8, b.h + 8, 8);
         ctx.fill();
       }
@@ -568,7 +596,7 @@ export class Renderer {
       for (const t of tps) {
         if ((deg.get(pointKey(t)) ?? 0) <= 1) {
           const w = gridToWorld(t);
-          ctx.strokeStyle = "rgba(248,113,113,0.8)";
+          ctx.strokeStyle = COL().unconnected;
           ctx.lineWidth = 1.5;
           ctx.beginPath();
           ctx.arc(w.x, w.y, 3.5, 0, Math.PI * 2);
@@ -580,13 +608,22 @@ export class Renderer {
     // Électrons
     if (app.options.electrons && !sim.error) this.drawElectrons(ctx, extra.frameDt);
 
+    // Flèches du sens conventionnel du courant
+    if (app.options.currentArrows && !sim.error) this.drawCurrentArrows(ctx);
+
+    // Sens de référence (flèche creuse + polarité) : composant sélectionné, ou tous si les mesures sont affichées
+    for (const c of app.circuit.components) {
+      const isSel = app.selection?.kind === "component" && app.selection.id === c.id;
+      if ((isSel || app.options.showReadings) && c.type !== "ground") this.drawReference(ctx, c);
+    }
+
     // Étiquettes
     this.drawLabels(ctx, view.zoom);
 
     // Terminal survolé
     if (extra.hover && (extra.hover.kind === "terminal" || extra.hover.kind === "wireEnd")) {
       const w = gridToWorld(extra.hover.point);
-      ctx.fillStyle = "rgba(56,189,248,0.9)";
+      ctx.fillStyle = withAlpha(COL().electron, 0.9);
       ctx.beginPath();
       ctx.arc(w.x, w.y, 5, 0, Math.PI * 2);
       ctx.fill();
@@ -596,7 +633,7 @@ export class Renderer {
     if (extra.wirePreview) {
       const { a, b } = extra.wirePreview;
       const pts = a.x !== b.x && a.y !== b.y ? [a, { x: b.x, y: a.y }, b] : [a, b];
-      ctx.strokeStyle = "rgba(56,189,248,0.9)";
+      ctx.strokeStyle = withAlpha(COL().electron, 0.9);
       ctx.lineWidth = 2.5;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
@@ -630,7 +667,7 @@ export class Renderer {
     const step = G * view.zoom;
     if (step < 6) return;
     const every = step < 12 ? 5 : 1;
-    ctx.fillStyle = COL.grid;
+    ctx.fillStyle = COL().grid;
     const startX = Math.floor(-view.pan.x / (step * every)) * every;
     const startY = Math.floor(-view.pan.y / (step * every)) * every;
     const endX = startX + Math.ceil(width / step) + every;
@@ -642,6 +679,159 @@ export class Renderer {
         ctx.fillRect(x - 0.75, y - 0.75, 1.5, 1.5);
       }
     }
+  }
+
+  /** Chemins parcourus par le courant (fils et composants), avec le courant conventionnel orienté le long des points. */
+  private currentPaths(): { key: string; pts: Vec[]; i: number }[] {
+    const app = this.app;
+    const paths: { key: string; pts: Vec[]; i: number }[] = [];
+    for (const w of app.circuit.wires) {
+      paths.push({ key: w.id, pts: [gridToWorld(w.a), gridToWorld(w.b)], i: app.sim.wireCurrents.get(w.id) ?? 0 });
+    }
+    for (const c of app.circuit.components) {
+      const r = app.sim.results.get(c.id);
+      if (!r) continue;
+      conductionPaths(c, r.i, r.ic).forEach((p, k) => paths.push({ key: `${c.id}#${k}`, pts: p.pts, i: p.i }));
+    }
+    return paths;
+  }
+
+  /**
+   * Flèches du sens du courant (conventionnel + → −, ou sens des électrons selon l'option) : une par ~90 px sur les fils (les fils alignés bout à bout
+   * sont regroupés pour ne pas multiplier les flèches sur les petits segments), une sur la patte de chaque composant.
+   */
+  private drawCurrentArrows(ctx: CanvasRenderingContext2D): void {
+    const app = this.app;
+    const threshold = Math.max(1e-12, app.options.iRef) * 1e-4;
+    // Sens conventionnel (+ → −) ou sens des électrons (− → +), comme l'animation.
+    const conv = app.options.conventional ? 1 : -1;
+    const size = 9;
+    ctx.fillStyle = COL().arrow;
+    ctx.strokeStyle = COL().bg;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    const arrow = (cx: number, cy: number, ux: number, uy: number) => {
+      ctx.beginPath();
+      ctx.moveTo(cx + ux * size * 0.6, cy + uy * size * 0.6);
+      ctx.lineTo(cx - ux * size * 0.4 - uy * size * 0.5, cy - uy * size * 0.4 + ux * size * 0.5);
+      ctx.lineTo(cx - ux * size * 0.4 + uy * size * 0.5, cy - uy * size * 0.4 - ux * size * 0.5);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.fill();
+    };
+
+    // Fils : regroupement des segments alignés reliés par un simple point de passage (degré 2).
+    const deg = connectionDegrees(app.circuit);
+    const atPoint = new Map<string, typeof app.circuit.wires>();
+    for (const w of app.circuit.wires) {
+      for (const p of [w.a, w.b]) {
+        const k = pointKey(p);
+        if (!atPoint.has(k)) atPoint.set(k, []);
+        atPoint.get(k)!.push(w);
+      }
+    }
+    const dirOf = (a: Vec, b: Vec) => ({ x: Math.sign(b.x - a.x), y: Math.sign(b.y - a.y) });
+    const visited = new Set<string>();
+    for (const w of app.circuit.wires) {
+      if (visited.has(w.id)) continue;
+      visited.add(w.id);
+      const i = conv * (app.sim.wireCurrents.get(w.id) ?? 0);
+      if (Math.abs(i) < threshold) continue;
+      // Orientation du chemin : de `from` vers `to` dans le sens du courant (selon la convention choisie).
+      let from = i > 0 ? w.a : w.b;
+      let to = i > 0 ? w.b : w.a;
+      const d = dirOf(from, to);
+      // Prolonge dans les deux sens tant que le fil suivant est aligné et seul au point de jonction.
+      const extend = (p: Vec, forward: boolean): Vec => {
+        for (;;) {
+          if ((deg.get(pointKey(p)) ?? 0) !== 2) return p;
+          const next = (atPoint.get(pointKey(p)) ?? []).find((x) => !visited.has(x.id));
+          if (!next) return p;
+          const far = samePoint(next.a, p) ? next.b : next.a;
+          const nd = forward ? dirOf(p, far) : dirOf(far, p);
+          if (nd.x !== d.x || nd.y !== d.y) return p;
+          visited.add(next.id);
+          p = far;
+        }
+      };
+      to = extend(to, true);
+      from = extend(from, false);
+      const a = gridToWorld(from);
+      const b = gridToWorld(to);
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (len < 24) continue;
+      const n = Math.max(1, Math.round(len / 90));
+      for (let j = 1; j <= n; j++) {
+        const t = j / (n + 1);
+        arrow(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, d.x, d.y);
+      }
+    }
+
+    // Composants : une flèche sur la première patte (hors du symbole).
+    for (const c of app.circuit.components) {
+      const r = app.sim.results.get(c.id);
+      if (!r) continue;
+      for (const path of conductionPaths(c, r.i, r.ic)) {
+        if (Math.abs(path.i) < threshold) continue;
+        const a = path.pts[0];
+        const b = path.pts[1];
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        if (len < 1) continue;
+        const sign = conv * Math.sign(path.i);
+        const t = path.pts.length === 2 ? 0.15 : 0.5;
+        arrow(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, ((b.x - a.x) / len) * sign, ((b.y - a.y) / len) * sign);
+      }
+    }
+  }
+
+  /**
+   * Repère de référence d'un composant : flèche creuse du sens de référence du courant et polarité (+ à la queue,
+   * − à la pointe) par rapport auxquels V et I sont signés. En mode « sens des électrons », la flèche est
+   * retournée : un courant positif signifie alors des électrons circulant dans le sens de la flèche.
+   */
+  private drawReference(ctx: CanvasRenderingContext2D, c: Component): void {
+    const app = this.app;
+    const s = app.refSign(c);
+    const conv = app.options.conventional ? 1 : -1;
+    const dep = isDependentSource(c.type);
+    const rot = (c.rot * Math.PI) / 2;
+    ctx.save();
+    ctx.translate(c.pos.x * G, c.pos.y * G);
+    ctx.rotate(rot);
+    // Composant à deux terminaux : axe de référence de x = −40 (terminal 0) vers x = +40 (terminal 1), sur la patte de droite.
+    // Source dépendante : branche de sortie T0 (40,−20) → (20,−20) → (20,20) → T1 (40,20) ; repère sur le dernier segment.
+    const dir = s * conv;
+    const plus = dep ? { x: 30, y: -30 * s } : { x: -33 * s, y: 10 };
+    const minus = dep ? { x: 30, y: 30 * s } : { x: 33 * s, y: 10 };
+    const arrow = dep ? { x: 30, y: 20 } : { x: 29, y: 0 };
+    ctx.fillStyle = COL().valueV;
+    ctx.font = "bold 11px Roboto, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    // La rotation du composant ne doit pas retourner le texte : on l'annule localement.
+    const mark = (p: Vec, txt: string) => {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(-rot);
+      ctx.fillText(txt, 0, 0);
+      ctx.restore();
+    };
+    mark(plus, "+");
+    mark(minus, "−");
+    // Flèche creuse sur la patte, dans le sens de référence
+    ctx.strokeStyle = COL().valueI;
+    ctx.fillStyle = COL().bg;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    const { x, y } = arrow;
+    ctx.beginPath();
+    ctx.moveTo(x + 6 * dir, y);
+    ctx.lineTo(x - 5 * dir, y - 5);
+    ctx.lineTo(x - 5 * dir, y + 5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawElectrons(ctx: CanvasRenderingContext2D, frameDt: number): void {
@@ -660,16 +850,8 @@ export class Renderer {
     };
     // Déplacement maximal par image, pour qu'un point ne saute jamais plus du tiers de l'espacement
     const maxStep = spacing * 0.35;
-    const paths: { key: string; pts: Vec[]; i: number }[] = [];
-    for (const w of app.circuit.wires) {
-      paths.push({ key: w.id, pts: [gridToWorld(w.a), gridToWorld(w.b)], i: app.sim.wireCurrents.get(w.id) ?? 0 });
-    }
-    for (const c of app.circuit.components) {
-      const r = app.sim.results.get(c.id);
-      if (!r) continue;
-      conductionPaths(c, r.i, r.ic).forEach((p, k) => paths.push({ key: `${c.id}#${k}`, pts: p.pts, i: p.i }));
-    }
-    const color = app.options.conventional ? COL.electronConv : COL.electron;
+    const paths = this.currentPaths();
+    const color = app.options.conventional ? COL().electronConv : COL().electron;
     ctx.fillStyle = color;
     const alive = new Set<string>();
     for (const p of paths) {
@@ -713,11 +895,26 @@ export class Renderer {
     const app = this.app;
     if (zoom < 0.45) return;
     const sim = app.sim;
-    ctx.font = "11px system-ui, sans-serif";
+    ctx.font = "11px Roboto, system-ui, sans-serif";
     ctx.textBaseline = "middle";
+    type Seg = { text: string; color: string };
+    type Line = { segs: Seg[]; kind: "label" | "reading" };
+    const drawLine = (line: Line, x: number, y: number, align: CanvasTextAlign) => {
+      const widths = line.segs.map((sg) => ctx.measureText(sg.text).width);
+      const gap = 7;
+      const total = widths.reduce((a, b) => a + b, 0) + gap * (line.segs.length - 1);
+      let cx = align === "center" ? x - total / 2 : align === "right" ? x - total : x;
+      ctx.textAlign = "left";
+      line.segs.forEach((sg, k) => {
+        ctx.fillStyle = sg.color;
+        ctx.fillText(sg.text, cx, y);
+        cx += widths[k] + gap;
+      });
+    };
     for (const c of app.circuit.components) {
-      const lines: { text: string; color: string }[] = [];
-      const res = sim.results.get(c.id);
+      const lines: Line[] = [];
+      const raw = sim.results.get(c.id);
+      const res = raw ? app.display(c, raw) : undefined;
       const name = displayName(c);
       if (app.options.showValues) {
         const mv = mainValue(c);
@@ -726,16 +923,19 @@ export class Renderer {
           if (typeof mv.value === "string") vt = isTimeDependent(mv.value) ? `${mv.value}` : formatSI(evalValue(mv.value, sim.time), mv.unit);
           else vt = formatSI(mv.value, mv.unit);
           if (vt.length > 22) vt = `${vt.slice(0, 20)}…`;
-          lines.push({ text: `${name}  ${vt}`, color: COL.label });
-        } else lines.push({ text: name, color: COL.label });
+          lines.push({ segs: [{ text: `${name}  ${vt}`, color: COL().label }], kind: "label" });
+        } else lines.push({ segs: [{ text: name, color: COL().label }], kind: "label" });
       }
       if (res && !sim.error) {
-        if (c.type === "voltmeter") lines.push({ text: formatSI(res.v, "V"), color: COL.meter });
-        else if (c.type === "ammeter") lines.push({ text: formatSI(res.i, "A"), color: COL.meter });
+        if (c.type === "voltmeter") lines.push({ segs: [{ text: formatSI(res.v, "V"), color: COL().valueV }], kind: "reading" });
+        else if (c.type === "ammeter") lines.push({ segs: [{ text: formatSI(res.i, "A"), color: COL().valueI }], kind: "reading" });
         else if (app.options.showReadings && c.type !== "ground") {
-          const parts = [formatSI(res.v, "V"), formatSI(res.i, "A")];
-          if (c.type !== "switch") parts.push(formatSI(res.p, "W"));
-          lines.push({ text: parts.join("  "), color: COL.reading });
+          const segs: Seg[] = [
+            { text: formatSI(res.v, "V"), color: COL().valueV },
+            { text: formatSI(res.i, "A"), color: COL().valueI },
+          ];
+          if (c.type !== "switch") segs.push({ text: formatSI(res.p, "W"), color: COL().valueP });
+          lines.push({ segs, kind: "reading" });
         }
       }
       if (lines.length === 0) continue;
@@ -745,27 +945,16 @@ export class Renderer {
       if (horizontal) {
         // valeur au-dessus, mesures en dessous
         const x = b.x + b.w / 2;
-        ctx.textAlign = "center";
-        const above = lines.filter((l) => l.color === COL.label);
-        const below = lines.filter((l) => l.color !== COL.label);
-        above.forEach((l, k) => {
-          ctx.fillStyle = l.color;
-          ctx.fillText(l.text, x, b.y - 8 - (above.length - 1 - k) * 13);
-        });
-        below.forEach((l, k) => {
-          ctx.fillStyle = l.color;
-          ctx.fillText(l.text, x, b.y + b.h + 9 + k * 13);
-        });
+        const above = lines.filter((l) => l.kind === "label");
+        const below = lines.filter((l) => l.kind === "reading");
+        above.forEach((l, k) => drawLine(l, x, b.y - 8 - (above.length - 1 - k) * 13, "center"));
+        below.forEach((l, k) => drawLine(l, x, b.y + b.h + 9 + k * 13, "center"));
         continue;
       }
       let x: number;
       let y: number;
       let align: CanvasTextAlign;
-      if (c.type === "ground") {
-        x = b.x + b.w / 2;
-        y = b.y + b.h + 9;
-        align = "center";
-      } else if (dep) {
+      if (c.type === "ground" || dep) {
         x = b.x + b.w / 2;
         y = b.y + b.h + 9;
         align = "center";
@@ -774,11 +963,7 @@ export class Renderer {
         y = b.y + b.h / 2 - ((lines.length - 1) * 13) / 2;
         align = "left";
       }
-      ctx.textAlign = align;
-      lines.forEach((l, k) => {
-        ctx.fillStyle = l.color;
-        ctx.fillText(l.text, x, y + k * 13);
-      });
+      lines.forEach((l, k) => drawLine(l, x, y + k * 13, align));
     }
   }
 
@@ -807,8 +992,9 @@ export class Renderer {
       }
     } else if (h.kind === "component") {
       const c = app.componentById(h.id);
-      const r = app.sim.results.get(h.id);
-      if (c && r && !app.sim.error && c.type !== "ground") {
+      const raw = app.sim.results.get(h.id);
+      if (c && raw && !app.sim.error && c.type !== "ground") {
+        const r = app.display(c, raw);
         text = `${displayName(c)} : V = ${formatSI(r.v, "V")}   I = ${formatSI(r.i, "A")}   P = ${formatSI(r.p, "W")}`;
         if (r.vc !== undefined && r.ic !== undefined)
           text += `   commande : ${formatSI(r.vc, "V")} / ${formatSI(r.ic, "A")}`;
@@ -824,13 +1010,13 @@ export class Renderer {
     let x = s.x + 14;
     const y = s.y + 18;
     if (x + tw + 12 > extra.width) x = extra.width - tw - 12;
-    ctx.fillStyle = "rgba(15,23,42,0.92)";
-    ctx.strokeStyle = "rgba(148,163,184,0.5)";
+    ctx.fillStyle = COL().tooltipBg;
+    ctx.strokeStyle = COL().tooltipBorder;
     ctx.lineWidth = 1;
     roundRect(ctx, x - 6, y - 10, tw + 12, 20, 5);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = "#e2e8f0";
+    ctx.fillStyle = COL().tooltipText;
     ctx.fillText(text, x, y);
   }
 }

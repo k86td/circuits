@@ -1,13 +1,17 @@
-/** Palette, barre d'outils, panneau de propriétés et oscilloscope (DOM). */
+/** Palette, barre d'outils, panneau de propriétés, oscilloscope et dialogue de thème (DOM, composants Material 3). */
 
 import { EXAMPLES } from "../sim/examples";
-import { EXPR_HELP, evalValue, isValidExpr } from "../sim/expr";
+import { EXPR_HELP, evalValue, exprRefs, isValidExpr } from "../sim/expr";
 import { type ComponentType, DEFS, PALETTE_ORDER, displayName, isDependentSource } from "../sim/model";
 import { formatSI, parseSI } from "../sim/units";
 import type { App } from "./app";
+import { $, showSnackbar } from "./dom";
 import type { Editor } from "./editor";
+import type { MdCheckbox, MdDialog, MdFilterChip, MdIconButton, MdMenu, MdOutlinedSelect, MdSlider, MdSwitch } from "./material";
+import { makeIcon, setIcon } from "./icons";
 import { drawIcon } from "./renderer";
 import { type Quantity, QUANTITY_INFO, WINDOWS } from "./scope";
+import { MODE_LABELS, PRESET_SEEDS, type ThemeMode, type ThemeVariant, VARIANT_LABELS, isHexColor, theme } from "./theme";
 
 const CATEGORY_LABELS: Record<string, string> = {
   sources: "Sources",
@@ -28,6 +32,8 @@ const PALETTE_NAMES: Record<ComponentType, string> = {
   vccs: "VCCS  G·v",
   ccvs: "CCVS  H·i",
   cccs: "CCCS  F·i",
+  vexpr: "Source v = f(i, v)",
+  iexpr: "Source i = f(i, v)",
   resistor: "Résistance",
   capacitor: "Condensateur",
   inductor: "Bobine",
@@ -40,23 +46,27 @@ const PALETTE_NAMES: Record<ComponentType, string> = {
   ammeter: "Ampèremètre",
 };
 
-function $<T extends HTMLElement>(sel: string): T {
-  const el = document.querySelector<T>(sel);
-  if (!el) throw new Error(`Élément introuvable : ${sel}`);
-  return el;
-}
-
 export function setupPanels(app: App, editor: Editor): void {
-  setupPalette(app, editor);
+  setupPalette(editor);
   setupToolbar(app, editor);
+  setupDisplayOptions(app);
   setupProps(app);
   setupScope(app);
   setupStatus(app);
+  setupThemeDialog();
+  setupDialogs();
+}
+
+/** Les boutons `data-close` ferment le dialogue Material qui les contient, avec leur valeur comme résultat. */
+function setupDialogs(): void {
+  for (const btn of document.querySelectorAll<HTMLElement>("md-dialog [data-close]")) {
+    btn.addEventListener("click", () => btn.closest<MdDialog>("md-dialog")?.close(btn.dataset.close));
+  }
 }
 
 // ---------------- Palette ----------------
 
-function setupPalette(app: App, editor: Editor): void {
+function setupPalette(editor: Editor): void {
   const root = $("#palette");
   root.innerHTML = "";
   const groups = new Map<string, ComponentType[]>();
@@ -65,6 +75,7 @@ function setupPalette(app: App, editor: Editor): void {
     if (!groups.has(cat)) groups.set(cat, []);
     groups.get(cat)!.push(t);
   }
+  const icons: { canvas: HTMLCanvasElement; type: ComponentType }[] = [];
   for (const [cat, types] of groups) {
     const h = document.createElement("div");
     h.className = "palette-cat";
@@ -75,11 +86,13 @@ function setupPalette(app: App, editor: Editor): void {
       const item = document.createElement("button");
       item.className = "palette-item";
       item.title = `${def.label}\n${def.description}\nGlisser sur le canevas, ou cliquer puis cliquer sur le canevas.`;
-      const icon = document.createElement("canvas");
-      drawIcon(icon, t);
+      const ripple = document.createElement("md-ripple");
+      const ic = document.createElement("canvas");
+      drawIcon(ic, t);
+      icons.push({ canvas: ic, type: t });
       const label = document.createElement("span");
       label.textContent = PALETTE_NAMES[t];
-      item.append(icon, label);
+      item.append(ripple, ic, label);
       item.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         editor.startPlacing(t);
@@ -92,32 +105,42 @@ function setupPalette(app: App, editor: Editor): void {
       root.appendChild(item);
     }
   }
-  void app;
+  // Les icônes sont dessinées avec les couleurs du thème : on les redessine quand il change.
+  theme.on(() => {
+    for (const { canvas, type } of icons) drawIcon(canvas, type);
+  });
 }
 
 // ---------------- Barre d'outils ----------------
 
 function setupToolbar(app: App, editor: Editor): void {
-  const play = $<HTMLButtonElement>("#btn-play");
-  const reset = $<HTMLButtonElement>("#btn-reset");
-  const speed = $<HTMLInputElement>("#speed");
+  const play = $<HTMLElement>("#btn-play");
+  const playIcon = $("#play-icon");
+  const playLabel = $("#play-label");
+  const reset = $("#btn-reset");
+  const speed = $<MdSlider>("#speed");
   const speedLabel = $("#speed-label");
-  const toolSelect = $<HTMLButtonElement>("#tool-select");
-  const toolWire = $<HTMLButtonElement>("#tool-wire");
-  const examples = $<HTMLSelectElement>("#examples");
-  const btnFit = $<HTMLButtonElement>("#btn-fit");
-  const btnUndo = $<HTMLButtonElement>("#btn-undo");
-  const btnRedo = $<HTMLButtonElement>("#btn-redo");
-  const btnClear = $<HTMLButtonElement>("#btn-clear");
-  const btnSave = $<HTMLButtonElement>("#btn-save");
-  const btnLoad = $<HTMLButtonElement>("#btn-load");
+  const toolSelect = $<MdIconButton>("#tool-select");
+  const toolWire = $<MdIconButton>("#tool-wire");
+  const btnExamples = $("#btn-examples");
+  const examplesMenu = $<MdMenu>("#examples-menu");
+  const btnFit = $("#btn-fit");
+  const btnUndo = $("#btn-undo");
+  const btnRedo = $("#btn-redo");
+  const btnClear = $("#btn-clear");
+  const confirmClear = $<MdDialog>("#confirm-clear");
+  const btnSave = $("#btn-save");
+  const btnLoad = $("#btn-load");
   const fileInput = $<HTMLInputElement>("#file-input");
-  const btnHelp = $<HTMLButtonElement>("#btn-help");
-  const help = $<HTMLDialogElement>("#help");
+  const btnHelp = $("#btn-help");
+  const help = $<MdDialog>("#help");
+  const btnTheme = $("#btn-theme");
+  const themeDialog = $<MdDialog>("#theme-dialog");
 
   const updatePlay = () => {
-    play.textContent = app.running ? "⏸ Pause" : "▶ Simuler";
-    play.classList.toggle("active", app.running);
+    setIcon(playIcon, app.running ? "pause" : "play_arrow");
+    playLabel.textContent = app.running ? "Pause" : "Simuler";
+    play.classList.toggle("running", app.running);
   };
   app.on("run", updatePlay);
   updatePlay();
@@ -125,19 +148,22 @@ function setupToolbar(app: App, editor: Editor): void {
   reset.addEventListener("click", () => app.reset());
 
   const SPEEDS = [1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10];
-  speed.min = "0";
-  speed.max = String(SPEEDS.length - 1);
-  speed.value = String(SPEEDS.indexOf(1));
+  speed.min = 0;
+  speed.max = SPEEDS.length - 1;
+  speed.step = 1;
+  speed.value = SPEEDS.indexOf(1);
   const updateSpeed = () => {
     app.timeScale = SPEEDS[Number(speed.value)];
-    speedLabel.textContent = `×${formatSI(app.timeScale, "", 2).replace(" ", "")}`;
+    const text = `×${formatSI(app.timeScale, "", 2).replace(" ", "")}`;
+    speedLabel.textContent = text;
+    speed.valueLabel = text;
   };
   speed.addEventListener("input", updateSpeed);
   updateSpeed();
 
   const updateTools = () => {
-    toolSelect.classList.toggle("active", editor.tool === "select");
-    toolWire.classList.toggle("active", editor.tool === "wire");
+    toolSelect.selected = editor.tool === "select";
+    toolWire.selected = editor.tool === "wire";
   };
   editor.onToolChange(updateTools);
   toolSelect.addEventListener("click", () => editor.setTool("select"));
@@ -145,24 +171,27 @@ function setupToolbar(app: App, editor: Editor): void {
   updateTools();
 
   for (const ex of EXAMPLES) {
-    const o = document.createElement("option");
-    o.value = ex.id;
-    o.textContent = ex.name;
-    examples.appendChild(o);
+    const item = document.createElement("md-menu-item");
+    const headline = document.createElement("div");
+    headline.slot = "headline";
+    headline.textContent = ex.name;
+    item.appendChild(headline);
+    item.addEventListener("click", () => {
+      app.loadExample(ex.id);
+      editor.zoomToFit();
+    });
+    examplesMenu.appendChild(item);
   }
-  examples.value = "";
-  examples.addEventListener("change", () => {
-    if (!examples.value) return;
-    app.loadExample(examples.value);
-    editor.zoomToFit();
-    examples.value = "";
+  btnExamples.addEventListener("click", () => {
+    examplesMenu.open = !examplesMenu.open;
   });
 
   btnFit.addEventListener("click", () => editor.zoomToFit());
   btnUndo.addEventListener("click", () => app.undo());
   btnRedo.addEventListener("click", () => app.redo());
-  btnClear.addEventListener("click", () => {
-    if (confirm("Effacer tout le circuit ?")) app.clearAll();
+  btnClear.addEventListener("click", () => void confirmClear.show());
+  confirmClear.addEventListener("closed", () => {
+    if (confirmClear.returnValue === "clear") app.clearAll();
   });
   btnSave.addEventListener("click", () => {
     const blob = new Blob([app.serialize()], { type: "application/json" });
@@ -171,44 +200,59 @@ function setupToolbar(app: App, editor: Editor): void {
     a.download = "circuit.json";
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    showSnackbar("Circuit enregistré (circuit.json).");
   });
   btnLoad.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", async () => {
     const f = fileInput.files?.[0];
     if (!f) return;
     const ok = app.loadJSON(await f.text());
-    if (!ok) alert("Fichier invalide.");
+    if (!ok) showSnackbar("Fichier invalide.");
     else editor.zoomToFit();
     fileInput.value = "";
   });
-  btnHelp.addEventListener("click", () => help.showModal());
+  btnHelp.addEventListener("click", () => void help.show());
+  btnTheme.addEventListener("click", () => void themeDialog.show());
   $("#expr-help").textContent = EXPR_HELP.join("\n");
+}
 
-  // Options d'affichage
-  const bind = (id: string, key: "electrons" | "conventional" | "voltageColors" | "showValues" | "showReadings") => {
-    const el = $<HTMLInputElement>(id);
-    el.checked = app.options[key];
-    el.addEventListener("change", () => app.setOptions({ [key]: el.checked }));
+// ---------------- Options d'affichage ----------------
+
+function setupDisplayOptions(app: App): void {
+  const bind = (id: string, key: "electrons" | "conventional" | "voltageColors" | "currentArrows" | "showValues" | "showReadings") => {
+    const el = $<MdSwitch>(id);
+    el.selected = app.options[key];
+    el.addEventListener("change", () => app.setOptions({ [key]: el.selected }));
+    app.on("options", () => {
+      el.selected = app.options[key];
+    });
   };
   bind("#opt-electrons", "electrons");
   bind("#opt-conventional", "conventional");
+  bind("#opt-arrows", "currentArrows");
   bind("#opt-colors", "voltageColors");
   bind("#opt-values", "showValues");
   bind("#opt-readings", "showReadings");
-  const iref = $<HTMLInputElement>("#opt-iref");
+
+  const iref = $<MdSlider>("#opt-iref");
   const irefLabel = $("#opt-iref-label");
   const IREFS = [1e-6, 10e-6, 100e-6, 1e-3, 5e-3, 10e-3, 50e-3, 100e-3, 0.5, 1, 5];
-  iref.min = "0";
-  iref.max = String(IREFS.length - 1);
+  iref.min = 0;
+  iref.max = IREFS.length - 1;
+  iref.step = 1;
   let idx = IREFS.findIndex((v) => v >= app.options.iRef);
   if (idx < 0) idx = IREFS.length - 1;
-  iref.value = String(idx);
-  const updIref = () => {
-    app.setOptions({ iRef: IREFS[Number(iref.value)] });
-    irefLabel.textContent = formatSI(app.options.iRef, "A", 2);
+  iref.value = idx;
+  const showIref = () => {
+    const text = formatSI(app.options.iRef, "A", 2);
+    irefLabel.textContent = text;
+    iref.valueLabel = text;
   };
-  iref.addEventListener("input", updIref);
-  irefLabel.textContent = formatSI(app.options.iRef, "A", 2);
+  iref.addEventListener("input", () => {
+    app.setOptions({ iRef: IREFS[Number(iref.value)] });
+    showIref();
+  });
+  showIref();
 }
 
 // ---------------- Propriétés ----------------
@@ -217,6 +261,13 @@ function setupProps(app: App): void {
   const root = $("#props");
   let currentId: string | null = null;
   let readings: HTMLElement | null = null;
+
+  const makeButton = (tag: "md-outlined-button" | "md-text-button" | "md-filled-tonal-button", label: string, iconName: string, onClick: () => void) => {
+    const b = document.createElement(tag);
+    b.append(makeIcon(iconName, "icon"), document.createTextNode(label));
+    b.addEventListener("click", onClick);
+    return b;
+  };
 
   const render = () => {
     const c = app.selectedComponent();
@@ -234,7 +285,7 @@ function setupProps(app: App): void {
     }
     if (!c) {
       currentId = null;
-      root.innerHTML = `<h3>Propriétés</h3><p class="hint">Sélectionnez un composant pour modifier ses valeurs et tracer ses courbes.</p>
+      root.innerHTML = `<p class="hint">Sélectionnez un composant pour modifier ses valeurs et tracer ses courbes.</p>
       <p class="hint">Astuces : glissez depuis un terminal pour tirer un fil · R pour pivoter · Suppr pour effacer · Espace pour lancer/arrêter · molette pour zoomer · cliquez un interrupteur pour le basculer.</p>`;
       return;
     }
@@ -248,46 +299,60 @@ function setupProps(app: App): void {
     desc.textContent = def.description;
     root.appendChild(desc);
 
+    // Grandeurs des autres composants utilisables dans les expressions
+    const others = app.circuit.components.filter((o) => o.id !== c.id && o.type !== "ground").map(displayName);
+    if (others.length > 0 && def.props.length > 0) {
+      const refs = document.createElement("p");
+      refs.className = "hint";
+      refs.textContent = `Dans une expression : t, ${others
+        .slice(0, 6)
+        .map((n) => `i_${n}, v_${n}`)
+        .join(", ")}${others.length > 6 ? ", …" : ""} (ex. 2*i_${others[0]}).`;
+      root.appendChild(refs);
+    }
+
+    const fields = document.createElement("div");
+    fields.className = "fields";
+    root.appendChild(fields);
+
     // Nom
-    const nameRow = document.createElement("label");
-    nameRow.className = "row";
-    nameRow.innerHTML = `<span>Nom</span>`;
-    const nameInput = document.createElement("input");
+    const nameInput = document.createElement("md-outlined-text-field");
+    nameInput.label = "Nom";
     nameInput.value = displayName(c);
     nameInput.addEventListener("change", () => {
       if (nameInput.value.trim() !== displayName(c)) app.setName(c.id, nameInput.value);
     });
-    nameRow.appendChild(nameInput);
-    root.appendChild(nameRow);
+    fields.appendChild(nameInput);
 
     def.props.forEach((p, k) => {
-      const row = document.createElement("label");
-      row.className = "row";
-      const span = document.createElement("span");
-      span.textContent = p.unit ? `${p.label} (${p.unit})` : p.label;
-      const input = document.createElement("input");
+      const input = document.createElement("md-outlined-text-field");
+      input.label = p.unit ? `${p.label} (${p.unit})` : p.label;
       if (k === 0) input.dataset.main = "1";
       const val = c.props[p.key];
       input.value = typeof val === "number" ? formatSI(val, "", 6).replace(" ", "") : String(val);
-      input.title = "Nombre avec préfixe SI (4.7k, 100u) ou expression de t (ex. 5*sin(2*pi*60*t))";
-      const err = document.createElement("small");
-      err.className = "error";
+      input.supportingText = "Préfixe SI (4.7k, 100u) ou expression de t";
+      const setError = (msg: string) => {
+        input.error = msg !== "";
+        input.errorText = msg;
+      };
       const apply = () => {
         const text = input.value.trim();
         const num = parseSI(text);
         const current = app.componentById(c.id)?.props[p.key];
         if (num !== null && !/[a-zA-Z]\(|\bt\b/.test(text)) {
           if (p.min !== undefined && num < p.min) {
-            err.textContent = `Minimum : ${formatSI(p.min, p.unit)}`;
+            setError(`Minimum : ${formatSI(p.min, p.unit)}`);
             return;
           }
-          err.textContent = "";
+          setError("");
           if (current !== num) app.setProp(c.id, p.key, num);
         } else if (isValidExpr(text)) {
-          err.textContent = "";
+          const names = new Set(app.circuit.components.map(displayName));
+          const unknown = exprRefs(text).filter((r) => !names.has(r.name)).map((r) => r.name);
+          setError(unknown.length > 0 ? `Composant introuvable : ${[...new Set(unknown)].join(", ")} (vaut 0)` : "");
           if (current !== text) app.setProp(c.id, p.key, text);
         } else {
-          err.textContent = "Valeur ou expression invalide";
+          setError("Valeur ou expression invalide");
         }
       };
       input.addEventListener("change", apply);
@@ -297,30 +362,28 @@ function setupProps(app: App): void {
           input.blur();
         }
       });
-      row.append(span, input, err);
-      root.appendChild(row);
+      fields.appendChild(input);
     });
 
     if (c.type === "switch") {
-      const b = document.createElement("button");
-      b.textContent = c.closed ? "Ouvrir l'interrupteur" : "Fermer l'interrupteur";
-      b.addEventListener("click", () => app.toggleSwitch(c.id));
+      const b = makeButton("md-filled-tonal-button", c.closed ? "Ouvrir l'interrupteur" : "Fermer l'interrupteur", c.closed ? "toggle_on" : "toggle_off", () =>
+        app.toggleSwitch(c.id),
+      );
       root.appendChild(b);
     }
 
     const actions = document.createElement("div");
     actions.className = "actions";
-    const rot = document.createElement("button");
-    rot.textContent = "⟳ Pivoter (R)";
-    rot.addEventListener("click", () => app.rotateSelection());
-    const dup = document.createElement("button");
-    dup.textContent = "⧉ Dupliquer";
-    dup.addEventListener("click", () => app.duplicateSelection());
-    const del = document.createElement("button");
-    del.textContent = "🗑 Supprimer";
+    const rot = makeButton("md-outlined-button", "Pivoter", "rotate_right", () => app.rotateSelection());
+    rot.title = "Pivoter (R)";
+    const flip = makeButton("md-outlined-button", "Sens de réf.", "swap_horiz", () => app.flipReference(c.id));
+    flip.title = "Inverser le sens de référence du courant (I) : V et I sont signés par rapport à cette flèche";
+    const dup = makeButton("md-outlined-button", "Dupliquer", "content_copy", () => app.duplicateSelection());
+    dup.title = "Dupliquer (Ctrl+D)";
+    const del = makeButton("md-text-button", "Supprimer", "delete", () => app.deleteSelection());
     del.className = "danger";
-    del.addEventListener("click", () => app.deleteSelection());
-    actions.append(rot, dup, del);
+    del.title = "Supprimer (Suppr)";
+    actions.append(rot, flip, dup, del);
     root.appendChild(actions);
 
     // Traces
@@ -333,14 +396,15 @@ function setupProps(app: App): void {
       const qs: Quantity[] = ["v", "i", "p", "r"];
       for (const q of qs) {
         const lab = document.createElement("label");
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
+        lab.className = "check-row";
+        const cb = document.createElement("md-checkbox") as MdCheckbox;
+        cb.setAttribute("touch-target", "wrapper");
         cb.checked = app.scope.has(c.id, q);
         cb.addEventListener("change", () => {
           app.scope.toggle(c.id, q);
           app.autosave();
         });
-        lab.append(cb, document.createTextNode(` ${QUANTITY_INFO[q].long}`));
+        lab.append(cb, document.createTextNode(QUANTITY_INFO[q].long));
         traces.appendChild(lab);
       }
       root.appendChild(traces);
@@ -363,26 +427,29 @@ function setupProps(app: App): void {
     }
     const c = app.selectedComponent();
     if (!c || c.id !== currentId) return;
-    const r = app.sim.results.get(c.id);
-    if (!r || app.sim.error || c.type === "ground") {
+    const raw = app.sim.results.get(c.id);
+    if (!raw || app.sim.error || c.type === "ground") {
       readings.innerHTML = "";
       return;
     }
-    const rows = [
-      ["Tension", formatSI(r.v, "V")],
-      ["Courant", formatSI(r.i, "A")],
-      ["Puissance", formatSI(r.p, "W")],
+    const r = app.display(c, raw);
+    const rows: [string, string, string][] = [
+      ["Tension", formatSI(r.v, "V"), "val-v"],
+      ["Courant", formatSI(r.i, "A"), "val-i"],
+      ["Puissance absorbée", formatSI(r.p, "W"), "val-p"],
     ];
-    if (Math.abs(r.i) > 1e-12) rows.push(["V / I", formatSI(r.v / r.i, "Ω")]);
+    if (Math.abs(r.i) > 1e-12) rows.push(["V / I", formatSI(r.v / r.i, "Ω"), ""]);
     if (isDependentSource(c.type) && r.vc !== undefined && r.ic !== undefined) {
-      rows.push(["Tension de commande", formatSI(r.vc, "V")]);
-      rows.push(["Courant de commande", formatSI(r.ic, "A")]);
+      rows.push(["Tension de commande", formatSI(r.vc, "V"), "val-v"]);
+      rows.push(["Courant de commande", formatSI(r.ic, "A"), "val-i"]);
     }
     for (const p of DEFS[c.type].props) {
       const v = c.props[p.key];
-      if (typeof v === "string") rows.push([`${p.label} (t)`, formatSI(evalValue(v, app.sim.time), p.unit)]);
+      if (typeof v === "string") rows.push([`${p.label} (t)`, formatSI(evalValue(v, app.sim.time, app.sim.refValue), p.unit), ""]);
     }
-    readings.innerHTML = rows.map(([k, v]) => `<div><b>${k}</b> ${v}</div>`).join("");
+    const ref = app.options.conventional ? "sens conventionnel" : "sens des électrons";
+    const note = `<div class="ref-note">Signes par rapport à la flèche de référence${c.flipRef ? " (inversée)" : ""} · ${ref}</div>`;
+    readings.innerHTML = rows.map(([k, v, cls]) => `<div><b>${k}</b> <span class="${cls}">${v}</span></div>`).join("") + note;
   };
 
   app.on("select", render);
@@ -407,18 +474,20 @@ function setupProps(app: App): void {
 function setupScope(app: App): void {
   const canvas = $<HTMLCanvasElement>("#scope");
   const ctx = canvas.getContext("2d")!;
-  const win = $<HTMLSelectElement>("#scope-window");
-  const clear = $<HTMLButtonElement>("#scope-clear");
-  const toggle = $<HTMLButtonElement>("#scope-toggle");
-  const panel = $("#scope-panel");
+  const win = $<MdOutlinedSelect>("#scope-window");
+  const clear = $("#scope-clear");
   for (const w of WINDOWS) {
-    const o = document.createElement("option");
+    const o = document.createElement("md-select-option");
     o.value = String(w);
-    o.textContent = formatSI(w, "s");
+    const headline = document.createElement("div");
+    headline.slot = "headline";
+    headline.textContent = formatSI(w, "s");
+    o.appendChild(headline);
     win.appendChild(o);
   }
   const syncWin = () => {
-    win.value = String(WINDOWS.reduce((best, w) => (Math.abs(w - app.scope.window) < Math.abs(best - app.scope.window) ? w : best), WINDOWS[0]));
+    const best = WINDOWS.reduce((b, w) => (Math.abs(w - app.scope.window) < Math.abs(b - app.scope.window) ? w : b), WINDOWS[0]);
+    if (win.value !== String(best)) win.value = String(best);
   };
   syncWin();
   win.addEventListener("change", () => {
@@ -430,19 +499,16 @@ function setupScope(app: App): void {
     app.emit("select");
     app.autosave();
   });
-  toggle.addEventListener("click", () => {
-    panel.classList.toggle("collapsed");
-    toggle.textContent = panel.classList.contains("collapsed") ? "▲ Oscilloscope" : "▼ Oscilloscope";
-  });
   app.on("change", syncWin);
 
   const draw = () => {
-    if (panel.classList.contains("collapsed")) {
+    const rect = canvas.getBoundingClientRect();
+    // Panneau masqué : rien à dessiner.
+    if (rect.width < 2 || rect.height < 2) {
       requestAnimationFrame(draw);
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
     const w = Math.round(rect.width * dpr);
     const h = Math.round(rect.height * dpr);
     if (canvas.width !== w || canvas.height !== h) {
@@ -489,4 +555,88 @@ function setupStatus(app: App): void {
   app.on("change", update);
   app.on("run", update);
   update();
+}
+
+// ---------------- Thème ----------------
+
+function setupThemeDialog(): void {
+  const modes = $("#theme-modes");
+  const seeds = $("#theme-seeds");
+  const variants = $("#theme-variants");
+  const contrast = $<MdSlider>("#theme-contrast");
+  const contrastLabel = $("#theme-contrast-label");
+  const reset = $("#theme-reset");
+
+  const modeChips = new Map<ThemeMode, MdFilterChip>();
+  for (const m of Object.keys(MODE_LABELS) as ThemeMode[]) {
+    const chip = document.createElement("md-filter-chip") as MdFilterChip;
+    chip.label = MODE_LABELS[m].label;
+    chip.appendChild(makeIcon(MODE_LABELS[m].icon, "icon"));
+    chip.addEventListener("click", () => theme.set({ mode: m }));
+    modes.appendChild(chip);
+    modeChips.set(m, chip);
+  }
+
+  const variantChips = new Map<ThemeVariant, MdFilterChip>();
+  for (const v of Object.keys(VARIANT_LABELS) as ThemeVariant[]) {
+    const chip = document.createElement("md-filter-chip") as MdFilterChip;
+    chip.label = VARIANT_LABELS[v];
+    chip.addEventListener("click", () => theme.set({ variant: v }));
+    variants.appendChild(chip);
+    variantChips.set(v, chip);
+  }
+
+  const swatches = new Map<string, HTMLButtonElement>();
+  for (const s of PRESET_SEEDS) {
+    const b = document.createElement("button");
+    b.className = "swatch";
+    b.style.background = s.hex;
+    b.title = s.name;
+    b.setAttribute("aria-label", s.name);
+    b.appendChild(makeIcon("check"));
+    b.addEventListener("click", () => theme.set({ seed: s.hex }));
+    seeds.appendChild(b);
+    swatches.set(s.hex.toLowerCase(), b);
+  }
+  const random = document.createElement("button");
+  random.className = "swatch";
+  random.title = "Couleur aléatoire";
+  random.setAttribute("aria-label", "Couleur aléatoire");
+  random.style.background = "var(--md-sys-color-surface-container-highest)";
+  const shuffle = makeIcon("shuffle");
+  shuffle.style.color = "var(--md-sys-color-on-surface)";
+  shuffle.style.mixBlendMode = "normal";
+  random.appendChild(shuffle);
+  random.addEventListener("click", () => theme.randomSeed());
+  seeds.appendChild(random);
+
+  const custom = document.createElement("label");
+  custom.className = "swatch custom";
+  custom.title = "Couleur personnalisée";
+  const picker = document.createElement("input");
+  picker.type = "color";
+  picker.setAttribute("aria-label", "Couleur personnalisée");
+  picker.addEventListener("input", () => {
+    if (isHexColor(picker.value)) theme.set({ seed: picker.value });
+  });
+  custom.appendChild(picker);
+  seeds.appendChild(custom);
+
+  contrast.addEventListener("input", () => theme.set({ contrast: Number(contrast.value) }));
+  reset.addEventListener("click", () => theme.set({ mode: "system", seed: PRESET_SEEDS[0].hex, variant: "tonalSpot", contrast: 0 }));
+
+  const sync = () => {
+    const s = theme.settings;
+    for (const [m, chip] of modeChips) chip.selected = m === s.mode;
+    for (const [v, chip] of variantChips) chip.selected = v === s.variant;
+    for (const [hex, b] of swatches) b.classList.toggle("selected", hex === s.seed.toLowerCase());
+    custom.classList.toggle("selected", !swatches.has(s.seed.toLowerCase()));
+    picker.value = s.seed;
+    contrast.value = s.contrast;
+    const text = s.contrast === 0 ? "standard" : s.contrast > 0 ? `+${s.contrast}` : String(s.contrast);
+    contrastLabel.textContent = text;
+    contrast.valueLabel = text;
+  };
+  theme.on(sync);
+  sync();
 }
