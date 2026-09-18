@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EXAMPLES } from "./examples";
-import { type Circuit, createComponent, createWire } from "./model";
+import { type Circuit, type Component, type ComponentType, type Rot, type Vec, createComponent, createWire } from "./model";
 import { normalizeWires } from "./netlist";
 import { Simulator } from "./solver";
 
@@ -233,5 +233,106 @@ describe("sources commandées par expression", () => {
     expect(sim.warning).toBeNull();
     expect(byType(sim, "resistor").r.i).toBeCloseTo(0.004, 9);
     expect(byType(sim, "resistor").r.v).toBeCloseTo(4, 6);
+  });
+});
+
+describe("stabilité numérique et performance", () => {
+  function loop(parts: Component[], wires: [Vec, Vec][]): Circuit {
+    return { components: parts, wires: wires.map(([a, b]) => createWire(a, b)) };
+  }
+  function comp(type: ComponentType, x: number, y: number, rot: Rot, props: Record<string, number | string>, name: string): Component {
+    const c = createComponent(type, { x, y }, rot);
+    Object.assign(c.props, props);
+    c.name = name;
+    return c;
+  }
+
+  it("un condensateur aux bornes d'une source carrée ne sonne pas (BDF2)", () => {
+    // Source carrée verticale à gauche, condensateur en parallèle, résistance + source de courant + pile à droite.
+    const c = loop(
+      [
+        comp("vfunc", 0, 4, 3, { V: "5*square(t, 100)" }, "V1"),
+        comp("capacitor", 6, 4, 1, { C: 1e-6 }, "C1"),
+        comp("resistor", 12, 0, 0, { R: 1000 }, "R1"),
+        comp("currentsource", 16, 4, 1, { I: 0.001 }, "I1"),
+        comp("battery", 12, 8, 0, { V: 3 }, "V2"),
+        comp("ground", 6, 9, 0, {}, "GND"),
+      ],
+      [
+        [{ x: 0, y: 2 }, { x: 0, y: 0 }], [{ x: 0, y: 0 }, { x: 6, y: 0 }], [{ x: 6, y: 0 }, { x: 6, y: 2 }], [{ x: 6, y: 0 }, { x: 10, y: 0 }],
+        [{ x: 14, y: 0 }, { x: 16, y: 0 }], [{ x: 16, y: 0 }, { x: 16, y: 2 }], [{ x: 16, y: 6 }, { x: 16, y: 8 }], [{ x: 16, y: 8 }, { x: 14, y: 8 }],
+        [{ x: 10, y: 8 }, { x: 6, y: 8 }], [{ x: 6, y: 6 }, { x: 6, y: 8 }], [{ x: 6, y: 8 }, { x: 0, y: 8 }], [{ x: 0, y: 8 }, { x: 0, y: 6 }],
+      ],
+    );
+    normalizeWires(c);
+    const sim = new Simulator(c);
+    sim.dt = 4e-5;
+    const cap = c.components.find((x) => x.name === "C1")!;
+    const hist: number[] = [];
+    for (let k = 0; k < 2000; k++) {
+      sim.step();
+      hist.push(sim.results.get(cap.id)!.i);
+    }
+    expect(sim.error).toBeNull();
+    // Entre deux fronts (période 10 ms = 250 pas), le courant du condensateur doit retomber à ~0, sans alterner de signe.
+    let flips = 0;
+    for (let k = hist.length - 200; k + 1 < hist.length; k++) if (hist[k] * hist[k + 1] < 0 && Math.abs(hist[k]) > 1e-6) flips++;
+    expect(flips).toBeLessThanOrEqual(2);
+    const tail = hist.slice(-40).map(Math.abs);
+    expect(Math.max(...tail)).toBeLessThan(1e-6);
+  });
+
+  it("garde la précision de la charge RC avec la factorisation réutilisée", () => {
+    const circuit = example("rc");
+    circuit.components.find((c) => c.type === "switch")!.closed = true;
+    const sim = new Simulator(circuit);
+    sim.dt = 5e-5;
+    const tau = 0.1;
+    while (sim.time < 2 * tau - 1e-9) sim.step();
+    expect(byType(sim, "capacitor").r.v).toBeCloseTo(5 * (1 - Math.exp(-2)), 3);
+  });
+
+  it("reste exact après un changement de pas de temps en cours de route", () => {
+    const circuit = example("rc");
+    circuit.components.find((c) => c.type === "switch")!.closed = true;
+    const sim = new Simulator(circuit);
+    sim.dt = 1e-4;
+    while (sim.time < 0.05 - 1e-9) sim.step();
+    sim.dt = 2e-5;
+    while (sim.time < 0.1 - 1e-9) sim.step();
+    expect(byType(sim, "capacitor").r.v).toBeCloseTo(5 * (1 - Math.exp(-1)), 2);
+  });
+
+  it("résout un système qui exige des pivots (deux piles, une source de courant, superposition)", () => {
+    const c = loop(
+      [
+        comp("battery", 0, 4, 3, { V: 9 }, "V1"),
+        comp("resistor", 4, 0, 0, { R: 1000 }, "R1"),
+        comp("resistor", 8, 4, 1, { R: 2000 }, "R2"),
+        comp("resistor", 12, 0, 0, { R: 500 }, "R3"),
+        comp("currentsource", 16, 4, 1, { I: 0.01 }, "I1"),
+        comp("battery", 12, 8, 0, { V: 6 }, "V2"),
+        comp("ground", 8, 9, 0, {}, "GND"),
+      ],
+      [
+        [{ x: 0, y: 2 }, { x: 0, y: 0 }], [{ x: 0, y: 0 }, { x: 2, y: 0 }], [{ x: 6, y: 0 }, { x: 8, y: 0 }], [{ x: 8, y: 0 }, { x: 8, y: 2 }],
+        [{ x: 8, y: 0 }, { x: 10, y: 0 }], [{ x: 14, y: 0 }, { x: 16, y: 0 }], [{ x: 16, y: 0 }, { x: 16, y: 2 }], [{ x: 16, y: 6 }, { x: 16, y: 8 }],
+        [{ x: 16, y: 8 }, { x: 14, y: 8 }], [{ x: 10, y: 8 }, { x: 8, y: 8 }], [{ x: 8, y: 6 }, { x: 8, y: 8 }], [{ x: 8, y: 8 }, { x: 0, y: 8 }], [{ x: 0, y: 8 }, { x: 0, y: 6 }],
+      ],
+    );
+    normalizeWires(c);
+    const sim = new Simulator(c);
+    expect(sim.error).toBeNull();
+    const byName = (n: string) => sim.results.get(c.components.find((x) => x.name === n)!.id)!;
+    // Lois de Kirchhoff : i(R1) = i(R2) + i(vers la droite) ; la source impose 10 mA dans sa maille.
+    const iR1 = byName("R1").i;
+    const iR2 = byName("R2").i;
+    expect(Math.abs(byName("I1").i)).toBeCloseTo(0.01, 9);
+    expect(Math.abs(iR1 - iR2)).toBeCloseTo(0.01, 6);
+    // 100 pas donnent le même point de fonctionnement (matrice constante réutilisée)
+    sim.dt = 1e-4;
+    for (let k = 0; k < 100; k++) sim.step();
+    expect(byName("R1").i).toBeCloseTo(iR1, 12);
+    expect(byName("R2").i).toBeCloseTo(iR2, 12);
   });
 });

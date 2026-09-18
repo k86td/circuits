@@ -507,30 +507,42 @@ export class App {
     this.emit("change");
   }
 
-  /** Fait avancer la simulation de realSeconds × timeScale. */
+  /** Pas de temps pour une vitesse donnée : ~400 pas par image à 60 Hz, borné (stable d'une image à l'autre). */
+  static timeStep(timeScale: number): number {
+    return Math.min(Math.max((timeScale / 60) / 400, 1e-9), 2e-4);
+  }
+
+  /**
+   * Fait avancer la simulation de realSeconds × timeScale. Le pas ne dépend que de la vitesse (la factorisation
+   * de la matrice est ainsi réutilisée d'une image à l'autre) ; le nombre de pas est plafonné, et le calcul s'arrête
+   * dès que le budget temps de l'image est consommé pour ne jamais faire saccader l'affichage : la vitesse réelle
+   * (effectiveScale) est alors inférieure à la vitesse demandée.
+   */
   advance(realSeconds: number): void {
     if (!this.running || this.sim.error) {
       this.lastSteps = 0;
       return;
     }
     const simSpan = Math.min(realSeconds, 0.05) * this.timeScale;
-    const maxSteps = 3000;
-    let dt = simSpan / 400;
-    dt = Math.min(Math.max(dt, 1e-9), 2e-4);
-    let steps = Math.round(simSpan / dt);
-    if (steps > maxSteps) {
-      steps = maxSteps;
-      this.effectiveScale = (steps * dt) / Math.max(realSeconds, 1e-6);
-    } else {
-      this.effectiveScale = this.timeScale;
-    }
+    const maxSteps = 4000;
+    const budgetMs = 9;
+    const dt = App.timeStep(this.timeScale);
+    const wanted = Math.min(maxSteps, Math.max(1, Math.round(simSpan / dt)));
     this.sim.dt = dt;
-    for (let k = 0; k < steps; k++) {
+    const t0 = performance.now();
+    let done = 0;
+    for (; done < wanted; done++) {
       this.sim.step();
       if (this.sim.error) break;
       this.scope.sample(this.sim.time, this.sim.results);
+      if ((done & 31) === 31 && performance.now() - t0 > budgetMs) {
+        done++;
+        break;
+      }
     }
-    this.lastSteps = steps;
+    const achieved = (done * dt) / Math.max(realSeconds, 1e-6);
+    this.effectiveScale = done >= wanted ? this.timeScale : Math.min(this.timeScale, achieved);
+    this.lastSteps = done;
     this.sim.computeWireCurrents();
     if (this.sim.error) this.setRunning(false);
     this.emit("tick");

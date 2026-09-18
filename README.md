@@ -38,8 +38,11 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
   `f` fichier) s'affichent au fur et à mesure (panneau « which-key ») ; `:` ouvre une palette de commandes où l'on tape
   le nom d'une action ou d'un composant (« R1 » le sélectionne) ; `?` liste tous les raccourcis. L'indicateur en bas du
   canevas montre le mode courant (NORMAL, FIL, DÉPLACER, SAISIE, ATTENTE…).
-- **Simulation** : analyse nodale modifiée en transitoire (méthode trapézoïdale), diodes par Newton-Raphson,
-  vitesse réglable de ×0,0001 à ×10 pour observer aussi bien un RC lent qu'un signal à 60 Hz.
+- **Simulation** : analyse nodale modifiée en transitoire (BDF2, sans oscillation numérique), diodes par
+  Newton-Raphson, vitesse réglable de ×0,0001 à ×10 pour observer aussi bien un RC lent qu'un signal à 60 Hz.
+  Le pas de temps ne dépend que de la vitesse choisie, la factorisation de la matrice est réutilisée tant que le
+  circuit est linéaire, et le calcul de chaque image est borné dans le temps : la vitesse réelle baisse plutôt que
+  de faire saccader l'affichage.
 - **Animation** : les électrons se déplacent à une vitesse qui suit le courant sur une échelle logarithmique
   plafonnée (lisible du µA à l'ampère, sans effet stroboscopique), du − vers le +
   (ou dans le sens conventionnel au choix) ; des flèches indiquent le sens conventionnel du courant ; les fils sont
@@ -73,7 +76,7 @@ Aucun serveur n'est nécessaire : `dist/` peut être ouvert tel quel ou héberg�
 src/sim/model.ts     types, définitions des composants (terminaux, propriétés)
 src/sim/netlist.ts   construction des nœuds (union-find), découpe des fils aux jonctions, fusion des segments alignés
 src/sim/wiring.ts    câblage : routage orthogonal avec obstacles, déplacement élastique des jonctions, chemins de fils
-src/sim/solver.ts    moteur MNA transitoire, sources dépendantes, courants dans les fils
+src/sim/solver.ts    moteur MNA transitoire (BDF2, LU réutilisée), sources dépendantes, courants dans les fils
 src/sim/expr.ts      évaluateur d'expressions de t
 src/sim/units.ts     préfixes SI
 src/sim/examples.ts  circuits d'exemple
