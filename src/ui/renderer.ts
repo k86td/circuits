@@ -15,6 +15,7 @@ import {
   terminalPositions,
 } from "../sim/model";
 import { connectionDegrees } from "../sim/netlist";
+import { bodyBox, wirePath } from "../sim/wiring";
 import { evalValue, isTimeDependent } from "../sim/expr";
 import { formatSI } from "../sim/units";
 import type { App } from "./app";
@@ -38,11 +39,16 @@ export interface DrawExtra {
   width: number;
   height: number;
   hover: Hit | null;
-  wirePreview: { a: Vec; b: Vec } | null;
+  /** Aperçu du fil en cours de tracé (polyligne en unités de grille). */
+  wirePreview: Vec[] | null;
   ghost: { type: ComponentType; pos: Vec; rot: Rot } | null;
   frameDt: number;
   /** Position du curseur en pixels-monde (pour l'infobulle). */
   cursor: Vec | null;
+  /** Curseur clavier (point de grille), s'il est actif. */
+  kcursor: Vec | null;
+  /** Mode déplacement au clavier : la sélection est mise en évidence différemment. */
+  moveMode: boolean;
 }
 
 /** Couleurs du rendu, dérivées du thème Material courant (voir theme.ts). */
@@ -68,19 +74,8 @@ export function worldToGrid(p: Vec): Vec {
 
 /** Boîte englobante (pixels-monde) du corps d'un composant. */
 export function componentBounds(c: Component): { x: number; y: number; w: number; h: number } {
-  let hw = 40;
-  let hh = 16;
-  if (isDependentSource(c.type)) {
-    hw = 40;
-    hh = 30;
-  } else if (c.type === "ground") {
-    hw = 14;
-    hh = 18;
-  }
-  if (c.rot % 2 === 1) [hw, hh] = [hh, hw];
-  const cx = c.pos.x * G + (c.type === "ground" ? rotateVec({ x: 0, y: -3 }, c.rot).x : 0);
-  const cy = c.pos.y * G + (c.type === "ground" ? rotateVec({ x: 0, y: -3 }, c.rot).y : 0);
-  return { x: cx - hw, y: cy - hh, w: hw * 2, h: hh * 2 };
+  const b = bodyBox(c);
+  return { x: b.x0 * G, y: b.y0 * G, w: (b.x1 - b.x0) * G, h: (b.y1 - b.y0) * G };
 }
 
 /** Chemins de conduction (pixels-monde) et courant associé. */
@@ -533,13 +528,15 @@ export class Renderer {
       return v === null ? COL().wire : voltageColor(v, vmax);
     };
 
-    // Fils
+    // Fils : la sélection et le survol portent sur tout le chemin de segments reliés bout à bout.
     const sel = app.selection;
+    const selWires = new Set(sel?.kind === "wire" ? sel.ids : []);
+    const hovWires = new Set(extra.hover?.kind === "wire" ? wirePath(app.circuit, extra.hover.id) : []);
     for (const w of app.circuit.wires) {
       const a = gridToWorld(w.a);
       const b = gridToWorld(w.b);
-      const isSel = sel?.kind === "wire" && sel.id === w.id;
-      const isHov = extra.hover?.kind === "wire" && extra.hover.id === w.id;
+      const isSel = selWires.has(w.id);
+      const isHov = hovWires.has(w.id);
       if (isSel || isHov) {
         ctx.strokeStyle = isSel ? COL().select : COL().hover;
         ctx.lineWidth = 10;
@@ -630,9 +627,8 @@ export class Renderer {
     }
 
     // Aperçu de fil
-    if (extra.wirePreview) {
-      const { a, b } = extra.wirePreview;
-      const pts = a.x !== b.x && a.y !== b.y ? [a, { x: b.x, y: a.y }, b] : [a, b];
+    if (extra.wirePreview && extra.wirePreview.length > 1) {
+      const pts = extra.wirePreview;
       ctx.strokeStyle = withAlpha(COL().electron, 0.9);
       ctx.lineWidth = 2.5;
       ctx.setLineDash([6, 4]);
@@ -657,10 +653,39 @@ export class Renderer {
       ctx.restore();
     }
 
+    // Curseur clavier : petit viseur sur le point de grille
+    if (extra.kcursor) this.drawKeyboardCursor(ctx, extra.kcursor, extra.moveMode);
+
     ctx.restore();
 
     // Infobulle (en pixels écran)
     if (extra.hover && extra.cursor) this.drawTooltip(ctx, view, extra);
+  }
+
+  private drawKeyboardCursor(ctx: CanvasRenderingContext2D, p: Vec, moveMode: boolean): void {
+    const w = gridToWorld(p);
+    const col = moveMode ? COL().valueI : COL().electron;
+    ctx.save();
+    ctx.strokeStyle = col;
+    ctx.fillStyle = withAlpha(col, 0.18);
+    ctx.lineWidth = 1.5;
+    const r = 7;
+    ctx.beginPath();
+    ctx.rect(w.x - r, w.y - r, r * 2, r * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      ctx.moveTo(w.x + dx * (r + 2), w.y + dy * (r + 2));
+      ctx.lineTo(w.x + dx * (r + 7), w.y + dy * (r + 7));
+    }
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawGrid(ctx: CanvasRenderingContext2D, view: View, width: number, height: number): void {

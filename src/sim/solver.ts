@@ -1,11 +1,18 @@
 /**
  * Moteur de simulation : analyse nodale modifiée (MNA) en régime transitoire.
- * - Condensateurs / bobines : intégration trapézoïdale (Euler implicite au premier pas).
+ * - Condensateurs / bobines : BDF2 (différentiation rétrograde d'ordre 2), Euler implicite aux deux premiers pas
+ *   après un changement. BDF2 est L-stable : contrairement au schéma trapézoïdal, il n'entretient pas d'oscillation
+ *   numérique (« sonnerie ») quand une source fait un saut aux bornes d'un condensateur ou impose un courant dans
+ *   une bobine.
  * - Diodes : Newton-Raphson avec limitation de tension.
  * - Sources dépendantes (VCVS, VCCS, CCVS, CCCS) : éléments à 4 terminaux.
  * - Toute valeur peut être une expression de t et des grandeurs d'autres composants (i_R1, v_R1). Pour les sources
  *   de tension / courant, ces dépendances sont linéarisées (dérivées numériques) et intégrées à la matrice à chaque
  *   itération de Newton : une expression linéaire est résolue exactement, une non linéaire converge par Newton.
+ * - Performance : le plan d'assemblage (indices de nœuds et de branches) est calculé une fois à rebuild() ; la
+ *   matrice est un tableau plat réutilisé ; quand elle ne dépend ni du temps ni de l'itéré (pas de diode, pas
+ *   d'expression de grandeur, pas de valeur de R / C / L / gain variable), sa factorisation LU est conservée et
+ *   chaque pas ne coûte qu'une substitution O(n²).
  * - Fils : courant calculé a posteriori par résolution d'un laplacien par nœud.
  */
 
@@ -29,12 +36,18 @@ export interface ComponentResult {
 interface DynState {
   vPrev: number;
   iPrev: number;
+  vPrev2: number;
+  iPrev2: number;
+  /** Nombre de pas d'historique valides (BDF2 en demande deux). */
+  hist: number;
   vDiode: number;
 }
 
 const GMIN = 1e-12;
 const VT = 0.025852; // kT/q à 300 K
 const MAX_NEWTON = 60;
+/** Pas en Euler implicite après un changement (rebuild, remise à zéro, nouveau pas de temps). */
+const BE_STEPS = 2;
 
 /** Forme linéarisée d'une grandeur : q = Σ coef·x[col] + k. */
 interface Lin {
@@ -42,44 +55,95 @@ interface Lin {
   k: number;
 }
 
-export function solveLinear(A: Float64Array[], z: Float64Array, n: number): Float64Array | null {
-  // Élimination de Gauss avec pivot partiel (modifie A et z).
+/** Plan d'assemblage d'un composant : indices pré-calculés (−1 = nœud de référence). */
+interface Plan {
+  c: Component;
+  /** Nœuds des terminaux. */
+  tn: number[];
+  ia: number;
+  ib: number;
+  ic: number;
+  id: number;
+  /** Inconnue de courant de la branche de sortie / de commande, ou −1. */
+  br: number;
+  brc: number;
+}
+
+/** Modèle compagnon d'un élément dynamique : i = g·v + ih. */
+interface Companion {
+  g: number;
+  ih: number;
+}
+
+// ---- Algèbre linéaire dense (tableau plat n×n, ligne par ligne) ----
+
+/** Factorisation LU en place avec pivot partiel ; renvoie false si la matrice est singulière. */
+function luFactor(A: Float64Array, n: number, piv: Int32Array): boolean {
   for (let col = 0; col < n; col++) {
-    let piv = col;
-    let best = Math.abs(A[col][col]);
+    let p = col;
+    let best = Math.abs(A[col * n + col]);
     for (let r = col + 1; r < n; r++) {
-      const v = Math.abs(A[r][col]);
+      const v = Math.abs(A[r * n + col]);
       if (v > best) {
         best = v;
-        piv = r;
+        p = r;
       }
     }
-    if (best < 1e-14) return null;
-    if (piv !== col) {
-      const tmp = A[piv];
-      A[piv] = A[col];
-      A[col] = tmp;
-      const tz = z[piv];
-      z[piv] = z[col];
-      z[col] = tz;
+    if (best < 1e-14) return false;
+    piv[col] = p;
+    if (p !== col) {
+      const a = col * n;
+      const b = p * n;
+      for (let k = 0; k < n; k++) {
+        const t = A[a + k];
+        A[a + k] = A[b + k];
+        A[b + k] = t;
+      }
     }
-    const prow = A[col];
-    const pv = prow[col];
+    const prow = col * n;
+    const pv = A[prow + col];
     for (let r = col + 1; r < n; r++) {
-      const row = A[r];
-      const f = row[col] / pv;
+      const row = r * n;
+      const f = A[row + col] / pv;
       if (f === 0) continue;
-      for (let c = col; c < n; c++) row[c] -= f * prow[c];
-      z[r] -= f * z[col];
+      A[row + col] = f;
+      for (let k = col + 1; k < n; k++) A[row + k] -= f * A[prow + k];
     }
   }
-  const x = new Float64Array(n);
+  return true;
+}
+
+/** Résout LU·x = z (z est modifié : permutations, puis substitutions avant et arrière). */
+function luSolve(LU: Float64Array, n: number, piv: Int32Array, z: Float64Array, x: Float64Array): void {
+  // Les lignes (multiplicateurs de L compris) ont été permutées en bloc à la factorisation : on permute z de même.
+  for (let col = 0; col < n; col++) {
+    const p = piv[col];
+    if (p !== col) {
+      const t = z[col];
+      z[col] = z[p];
+      z[p] = t;
+    }
+  }
+  for (let col = 0; col < n; col++) {
+    const zc = z[col];
+    if (zc !== 0) for (let r = col + 1; r < n; r++) z[r] -= LU[r * n + col] * zc;
+  }
   for (let r = n - 1; r >= 0; r--) {
     let s = z[r];
-    const row = A[r];
-    for (let c = r + 1; c < n; c++) s -= row[c] * x[c];
-    x[r] = s / row[r];
+    const row = r * n;
+    for (let k = r + 1; k < n; k++) s -= LU[row + k] * x[k];
+    x[r] = s / LU[row + r];
   }
+}
+
+/** Élimination de Gauss avec pivot partiel sur des lignes séparées (modifie A et z). */
+export function solveLinear(A: Float64Array[], z: Float64Array, n: number): Float64Array | null {
+  const flat = new Float64Array(n * n);
+  for (let r = 0; r < n; r++) flat.set(A[r].subarray(0, n), r * n);
+  const piv = new Int32Array(n);
+  if (!luFactor(flat, n, piv)) return null;
+  const x = new Float64Array(n);
+  luSolve(flat, n, piv, z, x);
   return x;
 }
 
@@ -118,21 +182,44 @@ function isDiode(c: Component): boolean {
   return c.type === "diode" || c.type === "led";
 }
 
+/** Propriétés qui entrent dans la matrice (et non seulement dans le second membre). */
+const MATRIX_PROPS: Partial<Record<Component["type"], string[]>> = {
+  resistor: ["R"],
+  lamp: ["R"],
+  voltmeter: ["R"],
+  capacitor: ["C"],
+  inductor: ["L"],
+  vcvs: ["gain"],
+  vccs: ["gain"],
+  ccvs: ["gain"],
+  cccs: ["gain"],
+};
+
 export class Simulator {
   circuit: Circuit;
   netlist: Netlist;
   time = 0;
-  /** Pas de temps courant (s). */
-  dt = 2e-5;
   nodeVoltages = new Float64Array(0);
   results = new Map<string, ComponentResult>();
   wireCurrents = new Map<string, number>();
   error: string | null = null;
   warning: string | null = null;
+  private _dt = 2e-5;
   private states = new Map<string, DynState>();
   private branchIndex = new Map<string, number>();
-  private forceBackwardEuler = true;
+  private beStepsLeft = BE_STEPS;
   private size = 0;
+  private plans: Plan[] = [];
+  private planById = new Map<string, Plan>();
+  private diodes: Plan[] = [];
+  /** Vrai si la matrice ne dépend ni du temps, ni de l'itéré de Newton : sa factorisation est réutilisable. */
+  private matrixConstant = false;
+  /** Factorisation conservée, avec le pas et le nombre d'éléments en Euler implicite pour lesquels elle vaut. */
+  private lu: { LU: Float64Array; piv: Int32Array; dt: number; beCount: number } | null = null;
+  private A = new Float64Array(0);
+  private z = new Float64Array(0);
+  private x = new Float64Array(0);
+  private piv = new Int32Array(0);
   /** Composants par nom affiché (pour i_R1, v_R1 dans les expressions). */
   private byName = new Map<string, Component>();
   /** Grandeurs référencées par chaque propriété exprimée (id → clé → références). */
@@ -146,11 +233,24 @@ export class Simulator {
     this.rebuild();
   }
 
+  /** Pas de temps (s). Le changer impose deux pas en Euler implicite et une nouvelle factorisation. */
+  get dt(): number {
+    return this._dt;
+  }
+
+  set dt(v: number) {
+    if (v === this._dt) return;
+    this._dt = v;
+    this.beStepsLeft = BE_STEPS;
+    this.lu = null;
+  }
+
   /** À appeler après tout changement de topologie ou de valeur. Conserve les états dynamiques. */
   rebuild(): void {
     this.netlist = buildNetlist(this.circuit);
+    const nl = this.netlist;
     this.branchIndex.clear();
-    let idx = Math.max(0, this.netlist.nodeCount - 1);
+    let idx = Math.max(0, nl.nodeCount - 1);
     for (const c of this.circuit.components) {
       if (hasOutputBranch(c)) this.branchIndex.set(c.id, idx++);
       if (hasControlBranch(c)) this.branchIndex.set(c.id + ":c", idx++);
@@ -158,22 +258,51 @@ export class Simulator {
     this.size = idx;
     this.byName.clear();
     this.propRefs.clear();
+    this.plans = [];
+    this.planById.clear();
+    this.diodes = [];
+    let constant = true;
     for (const c of this.circuit.components) {
       this.byName.set(displayName(c), c);
       for (const [key, val] of Object.entries(c.props)) {
         const refs = exprRefs(val);
         if (refs.length === 0) continue;
+        constant = false;
         if (!this.propRefs.has(c.id)) this.propRefs.set(c.id, new Map());
         this.propRefs.get(c.id)!.set(key, refs);
       }
+      for (const key of MATRIX_PROPS[c.type] ?? []) if (typeof c.props[key] !== "number") constant = false;
+      if (isDiode(c)) constant = false;
+      const tn = nl.terminalNodes.get(c.id) ?? [];
+      const plan: Plan = {
+        c,
+        tn,
+        ia: (tn[0] ?? 0) - 1,
+        ib: (tn[1] ?? 0) - 1,
+        ic: (tn[2] ?? 0) - 1,
+        id: (tn[3] ?? 0) - 1,
+        br: this.branchIndex.get(c.id) ?? -1,
+        brc: this.branchIndex.get(c.id + ":c") ?? -1,
+      };
+      this.plans.push(plan);
+      this.planById.set(c.id, plan);
+      if (isDiode(c)) this.diodes.push(plan);
     }
-    if (this.lastX.length !== this.size) this.lastX = new Float64Array(this.size);
+    this.matrixConstant = constant;
+    this.lu = null;
+    const n = this.size;
+    if (this.A.length !== n * n) this.A = new Float64Array(n * n);
+    if (this.z.length !== n) {
+      this.z = new Float64Array(n);
+      this.x = new Float64Array(n);
+      this.piv = new Int32Array(n);
+    }
+    if (this.lastX.length !== n) this.lastX = new Float64Array(n);
     const alive = new Set(this.circuit.components.map((c) => c.id));
     for (const k of [...this.states.keys()]) if (!alive.has(k)) this.states.delete(k);
-    if (this.nodeVoltages.length !== this.netlist.nodeCount) {
-      this.nodeVoltages = new Float64Array(this.netlist.nodeCount);
-    }
-    this.forceBackwardEuler = true;
+    for (const k of [...this.results.keys()]) if (!alive.has(k)) this.results.delete(k);
+    if (this.nodeVoltages.length !== nl.nodeCount) this.nodeVoltages = new Float64Array(nl.nodeCount);
+    this.beStepsLeft = BE_STEPS;
     this.error = null;
     this.solveOperatingPoint();
   }
@@ -182,14 +311,13 @@ export class Simulator {
   reset(): void {
     this.time = 0;
     this.states.clear();
-    this.forceBackwardEuler = true;
     this.rebuild();
   }
 
   private state(id: string): DynState {
     let s = this.states.get(id);
     if (!s) {
-      s = { vPrev: 0, iPrev: 0, vDiode: 0 };
+      s = { vPrev: 0, iPrev: 0, vPrev2: 0, iPrev2: 0, hist: 0, vDiode: 0 };
       this.states.set(id, s);
     }
     return s;
@@ -221,8 +349,28 @@ export class Simulator {
 
   step(): void {
     if (this.error) return;
-    const ok = this.solveStep(this.time + this.dt, this.dt, true);
-    if (ok) this.time += this.dt;
+    const ok = this.solveStep(this.time + this._dt, this._dt, true);
+    if (ok) this.time += this._dt;
+  }
+
+  /**
+   * Modèle compagnon d'un condensateur ou d'une bobine au pas dt (i = g·v + ih).
+   * dt = 0 : point de fonctionnement (le condensateur garde sa tension, la bobine son courant).
+   */
+  private companion(c: Component, st: DynState, dt: number, t: number, ctx: QuantityCtx | undefined, useBE: boolean): Companion {
+    if (c.type === "capacitor") {
+      const C = Math.max(this.prop(c, "C", t, ctx), 1e-18);
+      if (dt === 0) return { g: 1e3, ih: -1e3 * st.vPrev };
+      if (useBE) {
+        const g = C / dt;
+        return { g, ih: -g * st.vPrev };
+      }
+      return { g: (3 * C) / (2 * dt), ih: -(C / (2 * dt)) * (4 * st.vPrev - st.vPrev2) };
+    }
+    const L = Math.max(this.prop(c, "L", t, ctx), 1e-15);
+    if (dt === 0) return { g: 1e-3, ih: st.iPrev };
+    if (useBE) return { g: dt / L, ih: st.iPrev };
+    return { g: (2 * dt) / (3 * L), ih: (4 * st.iPrev - st.iPrev2) / 3 };
   }
 
   /**
@@ -238,32 +386,33 @@ export class Simulator {
       this.nodeVoltages = new Float64Array(nl.nodeCount);
       return true;
     }
-    const comps = this.circuit.components;
-    const useBE = this.forceBackwardEuler || dt === 0;
-    const diodes = comps.filter(isDiode);
-    const nodeIdx = (node: number) => node - 1; // le nœud 0 est la référence
+    const plans = this.plans;
+    const diodes = this.diodes;
+    const globalBE = this.beStepsLeft > 0 || dt === 0;
+    const useBEFor = (st: DynState) => globalBE || st.hist < 2;
+    const nodeRows = nl.nodeCount - 1;
+    const A = this.A;
+    const z = this.z;
 
     // Estimation initiale des tensions de diodes
     const vd = new Map<string, number>();
-    for (const d of diodes) vd.set(d.id, this.state(d.id).vDiode);
+    for (const d of diodes) vd.set(d.c.id, this.state(d.c.id).vDiode);
 
     const hasRefs = this.propRefs.size > 0;
     // Itéré courant des inconnues (point de départ : solution précédente)
-    let xk: Float64Array = this.lastX.length === n ? this.lastX : new Float64Array(n);
+    let xk: Float64Array = this.lastX;
 
     /**
      * Linéarisation d'une grandeur (courant ou tension d'un composant) autour de l'itéré courant, en fonction des
      * inconnues x (tensions de nœuds, courants de branches). Les sources de courant sont prises constantes.
      */
     const lin = (kind: "i" | "v", c: Component, ctx: QuantityCtx): Lin => {
-      const tn = nl.terminalNodes.get(c.id);
-      if (!tn || tn.length < 2) return { cols: [], k: 0 };
-      const ia = nodeIdx(tn[0]);
-      const ib = nodeIdx(tn[1]);
+      const p = this.planById.get(c.id);
+      if (!p || p.tn.length < 2) return { cols: [], k: 0 };
       const across = (g: number, k = 0): Lin => {
         const cols: [number, number][] = [];
-        if (ia >= 0) cols.push([ia, g]);
-        if (ib >= 0) cols.push([ib, -g]);
+        if (p.ia >= 0) cols.push([p.ia, g]);
+        if (p.ib >= 0) cols.push([p.ib, -g]);
         return { cols, k };
       };
       if (kind === "v") return across(1);
@@ -273,19 +422,12 @@ export class Simulator {
         case "lamp":
         case "voltmeter":
           return across(1 / Math.max(Pc("R"), 1e-9));
-        case "capacitor": {
-          const st = this.state(c.id);
-          const C = Math.max(Pc("C"), 1e-18);
-          if (dt === 0) return { cols: [], k: st.iPrev };
-          if (useBE) return across(C / dt, -(C / dt) * st.vPrev);
-          return across((2 * C) / dt, -((2 * C) / dt) * st.vPrev - st.iPrev);
-        }
+        case "capacitor":
         case "inductor": {
           const st = this.state(c.id);
-          const L = Math.max(Pc("L"), 1e-15);
           if (dt === 0) return { cols: [], k: st.iPrev };
-          if (useBE) return across(dt / L, st.iPrev);
-          return across(dt / (2 * L), st.iPrev + (dt / (2 * L)) * st.vPrev);
+          const m = this.companion(c, st, dt, t, ctx, useBEFor(st));
+          return across(m.g, m.ih);
         }
         case "currentsource":
         case "ifunc":
@@ -294,14 +436,12 @@ export class Simulator {
         case "vccs": {
           const G = Pc("gain");
           const cols: [number, number][] = [];
-          const cp = nodeIdx(tn[2]);
-          const cm = nodeIdx(tn[3]);
-          if (cp >= 0) cols.push([cp, G]);
-          if (cm >= 0) cols.push([cm, -G]);
+          if (p.ic >= 0) cols.push([p.ic, G]);
+          if (p.id >= 0) cols.push([p.id, -G]);
           return { cols, k: 0 };
         }
         case "cccs":
-          return { cols: [[this.branchIndex.get(c.id + ":c")!, Pc("gain")]], k: 0 };
+          return { cols: [[p.brc, Pc("gain")]], k: 0 };
         case "diode":
         case "led": {
           const nvt = VT * Pc("n");
@@ -311,10 +451,8 @@ export class Simulator {
           const g = (is * ex) / nvt + GMIN;
           return across(g, is * (ex - 1) - g * v0);
         }
-        default: {
-          const br = this.branchIndex.get(c.id);
-          return br === undefined ? { cols: [], k: 0 } : { cols: [[br, 1]], k: 0 };
-        }
+        default:
+          return p.br < 0 ? { cols: [], k: 0 } : { cols: [[p.br, 1]], k: 0 };
       }
     };
     const linValue = (l: Lin, xv: Float64Array) => l.cols.reduce((acc, [col, coef]) => acc + coef * xv[col], l.k);
@@ -336,8 +474,8 @@ export class Simulator {
       return ctx;
     };
 
-    // Valeurs de propriétés évaluées à t, avec les grandeurs de l'itéré courant
-    let ctx = ctxAt(xk);
+    // Valeurs de propriétés évaluées à t, avec les grandeurs de l'itéré courant (seulement si des expressions en dépendent)
+    let ctx: QuantityCtx | undefined = hasRefs ? ctxAt(xk) : undefined;
     const P = (c: Component, key: string) => this.prop(c, key, t, ctx);
 
     /**
@@ -347,17 +485,18 @@ export class Simulator {
     const behavioral = (c: Component, key: string): Lin => {
       const refs = this.propRefs.get(c.id)?.get(key);
       const f0 = P(c, key);
-      if (!refs) return { cols: [], k: f0 };
+      if (!refs || !ctx) return { cols: [], k: f0 };
+      const cx = ctx;
       const out: Lin = { cols: [], k: f0 };
       for (const ref of refs) {
         const target = this.byName.get(ref.name);
         if (!target) continue;
         const s = this.refSign(target);
-        const l = lin(ref.kind, target, ctx);
+        const l = lin(ref.kind, target, cx);
         const q0 = s * linValue(l, xk);
         const h = Math.max(1e-7, 1e-4 * Math.abs(q0));
         const evalWith = (q: number) => {
-          const over: QuantityCtx = (kind, name) => (kind === ref.kind && name === ref.name ? q : ctx(kind, name));
+          const over: QuantityCtx = (kind, name) => (kind === ref.kind && name === ref.name ? q : cx(kind, name));
           return this.prop(c, key, t, over);
         };
         const d = (evalWith(q0 + h) - evalWith(q0 - h)) / (2 * h);
@@ -368,92 +507,72 @@ export class Simulator {
       return out;
     };
 
-    let x: Float64Array | null = null;
-    let converged = diodes.length === 0 && !hasRefs;
-    for (let iter = 0; iter < MAX_NEWTON; iter++) {
-      ctx = ctxAt(xk);
-      const A: Float64Array[] = [];
-      for (let r = 0; r < n; r++) A.push(new Float64Array(n));
-      const z = new Float64Array(n);
-      for (let k = 0; k < nl.nodeCount - 1; k++) A[k][k] += GMIN;
+    // Nombre d'éléments dynamiques encore en Euler implicite : la matrice en dépend.
+    let beCount = 0;
+    for (const p of plans) {
+      if (p.c.type === "capacitor" || p.c.type === "inductor") if (useBEFor(this.state(p.c.id))) beCount++;
+    }
+    // Factorisation réutilisable ? (matrice constante, même pas, même schéma d'intégration)
+    const reuse = this.matrixConstant && dt > 0 && this.lu !== null && this.lu.dt === dt && this.lu.beCount === beCount;
 
-      const stampG = (a: number, b: number, g: number) => {
-        const ia = nodeIdx(a);
-        const ib = nodeIdx(b);
-        if (ia >= 0) A[ia][ia] += g;
-        if (ib >= 0) A[ib][ib] += g;
+    /**
+     * Assemble le second membre z et, si doA, la matrice A. Renvoie la source court-circuitée s'il y en a une.
+     */
+    const assemble = (doA: boolean): Component | null => {
+      z.fill(0);
+      if (doA) {
+        A.fill(0);
+        for (let k = 0; k < nodeRows; k++) A[k * n + k] += GMIN;
+      }
+      const stampG = (ia: number, ib: number, g: number) => {
+        if (!doA) return;
+        if (ia >= 0) A[ia * n + ia] += g;
+        if (ib >= 0) A[ib * n + ib] += g;
         if (ia >= 0 && ib >= 0) {
-          A[ia][ib] -= g;
-          A[ib][ia] -= g;
+          A[ia * n + ib] -= g;
+          A[ib * n + ia] -= g;
         }
       };
-      // courant I injecté dans le nœud a et extrait du nœud b (circule de b vers a dans le composant)
-      const stampI = (a: number, b: number, i: number) => {
-        const ia = nodeIdx(a);
-        const ib = nodeIdx(b);
+      // courant I injecté dans le nœud ia et extrait du nœud ib
+      const stampI = (ia: number, ib: number, i: number) => {
         if (ia >= 0) z[ia] += i;
         if (ib >= 0) z[ib] -= i;
       };
       // branche de tension : V(a) − V(b) = e, courant de branche circulant de a vers b dans le composant
-      const stampV = (a: number, b: number, br: number, e: number) => {
-        const ia = nodeIdx(a);
-        const ib = nodeIdx(b);
-        if (ia >= 0) {
-          A[ia][br] += 1;
-          A[br][ia] += 1;
-        }
-        if (ib >= 0) {
-          A[ib][br] -= 1;
-          A[br][ib] -= 1;
+      const stampV = (ia: number, ib: number, br: number, e: number) => {
+        if (doA) {
+          if (ia >= 0) {
+            A[ia * n + br] += 1;
+            A[br * n + ia] += 1;
+          }
+          if (ib >= 0) {
+            A[ib * n + br] -= 1;
+            A[br * n + ib] -= 1;
+          }
         }
         z[br] += e;
       };
+      const setA = (r: number, col: number, v: number) => {
+        if (doA) A[r * n + col] += v;
+      };
 
       let shorted: Component | null = null;
-      for (const c of comps) {
-        const tn = nl.terminalNodes.get(c.id)!;
-        const a = tn[0];
-        const b = tn[1];
+      for (const p of plans) {
+        const c = p.c;
+        const { ia, ib } = p;
+        const sameNode = p.tn.length >= 2 && p.tn[0] === p.tn[1];
         switch (c.type) {
           case "resistor":
           case "lamp":
           case "voltmeter":
-            stampG(a, b, 1 / Math.max(P(c, "R"), 1e-9));
+            stampG(ia, ib, 1 / Math.max(P(c, "R"), 1e-9));
             break;
-          case "capacitor": {
-            const s = this.state(c.id);
-            const C = Math.max(P(c, "C"), 1e-18);
-            if (dt === 0) {
-              const g = 1e3;
-              stampG(a, b, g);
-              stampI(a, b, g * s.vPrev);
-            } else if (useBE) {
-              const g = C / dt;
-              stampG(a, b, g);
-              stampI(a, b, g * s.vPrev);
-            } else {
-              const g = (2 * C) / dt;
-              stampG(a, b, g);
-              stampI(a, b, g * s.vPrev + s.iPrev);
-            }
-            break;
-          }
+          case "capacitor":
           case "inductor": {
-            const s = this.state(c.id);
-            const L = Math.max(P(c, "L"), 1e-15);
-            if (dt === 0) {
-              const g = 1e-3;
-              stampG(a, b, g);
-              stampI(a, b, -s.iPrev);
-            } else if (useBE) {
-              const g = dt / L;
-              stampG(a, b, g);
-              stampI(a, b, -s.iPrev);
-            } else {
-              const g = dt / (2 * L);
-              stampG(a, b, g);
-              stampI(a, b, -(s.iPrev + g * s.vPrev));
-            }
+            const st = this.state(c.id);
+            const m = this.companion(c, st, dt, t, ctx, useBEFor(st));
+            stampG(ia, ib, m.g);
+            stampI(ib, ia, m.ih);
             break;
           }
           case "currentsource":
@@ -461,12 +580,10 @@ export class Simulator {
           case "iexpr": {
             // le courant sort par le terminal 1 (pointe de la flèche) ; partie linéarisée portée dans A
             const l = behavioral(c, "I");
-            stampI(b, a, l.k);
-            const ia = nodeIdx(a);
-            const ib = nodeIdx(b);
+            stampI(ib, ia, l.k);
             for (const [col, coef] of l.cols) {
-              if (ib >= 0) A[ib][col] -= coef;
-              if (ia >= 0) A[ia][col] += coef;
+              if (ib >= 0) setA(ib, col, -coef);
+              if (ia >= 0) setA(ia, col, coef);
             }
             break;
           }
@@ -476,73 +593,60 @@ export class Simulator {
           case "vexpr":
           case "ammeter":
           case "switch": {
-            if (!hasOutputBranch(c)) break; // interrupteur ouvert
-            const br = this.branchIndex.get(c.id)!;
-            if (a === b) {
+            if (p.br < 0) break; // interrupteur ouvert
+            if (sameNode) {
               if (c.type !== "ammeter" && c.type !== "switch") shorted = c;
-              A[br][br] += 1; // branche court-circuitée : i = 0, matrice régulière
+              setA(p.br, p.br, 1); // branche court-circuitée : i = 0, matrice régulière
               break;
             }
             if (c.type === "battery" || c.type === "vfunc" || c.type === "vexpr") {
               const l = behavioral(c, "V");
-              stampV(a, b, br, l.k);
-              for (const [col, coef] of l.cols) A[br][col] -= coef;
+              stampV(ia, ib, p.br, l.k);
+              for (const [col, coef] of l.cols) setA(p.br, col, -coef);
             } else if (c.type === "acsource") {
-              stampV(a, b, br, P(c, "A") * Math.sin(2 * Math.PI * P(c, "f") * t + (P(c, "phi") * Math.PI) / 180) + P(c, "off"));
-            } else stampV(a, b, br, 0);
+              stampV(ia, ib, p.br, P(c, "A") * Math.sin(2 * Math.PI * P(c, "f") * t + (P(c, "phi") * Math.PI) / 180) + P(c, "off"));
+            } else stampV(ia, ib, p.br, 0);
             break;
           }
           case "vcvs": {
-            const br = this.branchIndex.get(c.id)!;
-            const cp = nodeIdx(tn[2]);
-            const cm = nodeIdx(tn[3]);
             const E = P(c, "gain");
-            if (a === b) {
-              A[br][br] += 1;
+            if (sameNode) {
+              setA(p.br, p.br, 1);
               break;
             }
-            stampV(a, b, br, 0);
-            if (cp >= 0) A[br][cp] -= E;
-            if (cm >= 0) A[br][cm] += E;
+            stampV(ia, ib, p.br, 0);
+            if (p.ic >= 0) setA(p.br, p.ic, -E);
+            if (p.id >= 0) setA(p.br, p.id, E);
             break;
           }
           case "vccs": {
-            const ia = nodeIdx(a);
-            const ib = nodeIdx(b);
-            const cp = nodeIdx(tn[2]);
-            const cm = nodeIdx(tn[3]);
             const G = P(c, "gain");
             // courant G·(Vcp − Vcm) circulant de a vers b dans la source
-            if (ia >= 0 && cp >= 0) A[ia][cp] += G;
-            if (ia >= 0 && cm >= 0) A[ia][cm] -= G;
-            if (ib >= 0 && cp >= 0) A[ib][cp] -= G;
-            if (ib >= 0 && cm >= 0) A[ib][cm] += G;
+            if (ia >= 0 && p.ic >= 0) setA(ia, p.ic, G);
+            if (ia >= 0 && p.id >= 0) setA(ia, p.id, -G);
+            if (ib >= 0 && p.ic >= 0) setA(ib, p.ic, -G);
+            if (ib >= 0 && p.id >= 0) setA(ib, p.id, G);
             break;
           }
           case "ccvs": {
-            const br = this.branchIndex.get(c.id)!;
-            const brc = this.branchIndex.get(c.id + ":c")!;
             const H = P(c, "gain");
-            if (tn[2] === tn[3]) A[brc][brc] += 1;
-            else stampV(tn[2], tn[3], brc, 0);
-            if (a === b) {
-              A[br][br] += 1;
+            if (p.tn[2] === p.tn[3]) setA(p.brc, p.brc, 1);
+            else stampV(p.ic, p.id, p.brc, 0);
+            if (sameNode) {
+              setA(p.br, p.br, 1);
               break;
             }
-            stampV(a, b, br, 0);
-            A[br][brc] -= H;
+            stampV(ia, ib, p.br, 0);
+            setA(p.br, p.brc, -H);
             break;
           }
           case "cccs": {
-            const brc = this.branchIndex.get(c.id + ":c")!;
             const F = P(c, "gain");
-            if (tn[2] === tn[3]) A[brc][brc] += 1;
-            else stampV(tn[2], tn[3], brc, 0);
-            const ia = nodeIdx(a);
-            const ib = nodeIdx(b);
+            if (p.tn[2] === p.tn[3]) setA(p.brc, p.brc, 1);
+            else stampV(p.ic, p.id, p.brc, 0);
             // courant F·ic circulant de a vers b dans la source
-            if (ia >= 0) A[ia][brc] += F;
-            if (ib >= 0) A[ib][brc] -= F;
+            if (ia >= 0) setA(ia, p.brc, F);
+            if (ib >= 0) setA(ib, p.brc, -F);
             break;
           }
           case "diode":
@@ -551,26 +655,52 @@ export class Simulator {
             const is = P(c, "Is");
             const v = vd.get(c.id)!;
             const ex = Math.exp(Math.min(v / nvt, 80));
-            const id = is * (ex - 1);
+            const idd = is * (ex - 1);
             const g = (is * ex) / nvt + GMIN;
-            stampG(a, b, g);
-            stampI(b, a, id - g * v);
+            stampG(ia, ib, g);
+            stampI(ib, ia, idd - g * v);
             break;
           }
           case "ground":
             break;
         }
       }
-      if (shorted) {
-        this.error = `Source de tension court-circuitée (${shortLabel(shorted)}).`;
-        return false;
-      }
+      return shorted;
+    };
 
-      x = solveLinear(A, z, n);
-      if (!x) {
-        this.error = "Circuit impossible à résoudre : sources de tension en conflit (parallèle ou boucle).";
-        return false;
+    let x: Float64Array | null = null;
+    let converged = diodes.length === 0 && !hasRefs;
+    for (let iter = 0; iter < MAX_NEWTON; iter++) {
+      if (hasRefs) ctx = ctxAt(xk);
+      let LU: Float64Array;
+      let piv: Int32Array;
+      if (reuse) {
+        const shorted = assemble(false);
+        if (shorted) {
+          this.error = `Source de tension court-circuitée (${shortLabel(shorted)}).`;
+          return false;
+        }
+        LU = this.lu!.LU;
+        piv = this.lu!.piv;
+      } else {
+        const shorted = assemble(true);
+        if (shorted) {
+          this.error = `Source de tension court-circuitée (${shortLabel(shorted)}).`;
+          return false;
+        }
+        if (!luFactor(A, n, this.piv)) {
+          this.error = "Circuit impossible à résoudre : sources de tension en conflit (parallèle ou boucle).";
+          return false;
+        }
+        LU = A;
+        piv = this.piv;
+        if (this.matrixConstant && dt > 0) {
+          // La matrice ne changera plus tant que dt et le schéma d'intégration restent les mêmes.
+          this.lu = { LU: Float64Array.from(A), piv: Int32Array.from(this.piv), dt, beCount };
+        }
       }
+      luSolve(LU, n, piv, z, this.x);
+      x = this.x;
 
       // Convergence des expressions : les inconnues ne bougent plus entre deux itérations
       let refsOk = true;
@@ -582,7 +712,7 @@ export class Simulator {
           maxDx = Math.max(maxDx, Math.abs(x[k] - xk[k]));
         }
         refsOk = maxDx <= 1e-9 * (1 + maxX);
-        xk = x;
+        xk = Float64Array.from(x);
       }
 
       if (diodes.length === 0) {
@@ -594,15 +724,14 @@ export class Simulator {
       }
       let maxDelta = 0;
       for (const d of diodes) {
-        const tn = nl.terminalNodes.get(d.id)!;
-        const va = tn[0] > 0 ? x[tn[0] - 1] : 0;
-        const vb = tn[1] > 0 ? x[tn[1] - 1] : 0;
-        const nvt = VT * P(d, "n");
-        const vcrit = nvt * Math.log(nvt / (Math.SQRT2 * P(d, "Is")));
-        const old = vd.get(d.id)!;
+        const va = d.ia >= 0 ? x[d.ia] : 0;
+        const vb = d.ib >= 0 ? x[d.ib] : 0;
+        const nvt = VT * P(d.c, "n");
+        const vcrit = nvt * Math.log(nvt / (Math.SQRT2 * P(d.c, "Is")));
+        const old = vd.get(d.c.id)!;
         const vnew = pnjlim(va - vb, old, nvt, vcrit);
         maxDelta = Math.max(maxDelta, Math.abs(vnew - old));
-        vd.set(d.id, vnew);
+        vd.set(d.c.id, vnew);
       }
       if (maxDelta < 1e-6 && refsOk) {
         converged = true;
@@ -610,56 +739,55 @@ export class Simulator {
       }
     }
     if (!x) return false;
-    this.lastX = x;
-    ctx = ctxAt(x);
+    this.lastX.set(x);
+    if (hasRefs) ctx = ctxAt(x);
     this.warning = converged ? null : hasRefs ? "Convergence difficile (diodes ou expressions)." : "Convergence difficile (diodes).";
 
     // Tensions de nœuds
-    const volts = new Float64Array(nl.nodeCount);
+    const volts = this.nodeVoltages.length === nl.nodeCount ? this.nodeVoltages : new Float64Array(nl.nodeCount);
+    volts[0] = 0;
     for (let k = 1; k < nl.nodeCount; k++) volts[k] = x[k - 1];
     this.nodeVoltages = volts;
     let maxV = 0;
     for (const v of volts) maxV = Math.max(maxV, Math.abs(v));
     if (maxV > 1e7) this.warning = "Tensions énormes : une source de courant est-elle en circuit ouvert ?";
 
-    // Résultats par composant
-    for (const c of comps) {
-      const tn = nl.terminalNodes.get(c.id)!;
-      if (tn.length < 2) {
-        this.results.set(c.id, { i: 0, v: 0, p: 0 });
+    // Résultats par composant (objets réutilisés d'un pas à l'autre)
+    for (const p of plans) {
+      const c = p.c;
+      let r = this.results.get(c.id);
+      if (!r) {
+        r = { i: 0, v: 0, p: 0 };
+        this.results.set(c.id, r);
+      }
+      if (p.tn.length < 2) {
+        r.i = 0;
+        r.v = 0;
+        r.p = 0;
         continue;
       }
-      const v = volts[tn[0]] - volts[tn[1]];
+      const v = volts[p.tn[0]] - volts[p.tn[1]];
       let i = 0;
-      let ic: number | undefined;
-      let vc: number | undefined;
       switch (c.type) {
         case "resistor":
         case "lamp":
         case "voltmeter":
           i = v / Math.max(P(c, "R"), 1e-9);
           break;
-        case "capacitor": {
-          const s = this.state(c.id);
-          const C = Math.max(P(c, "C"), 1e-18);
-          if (dt === 0) i = s.iPrev;
-          else if (useBE) i = (C / dt) * (v - s.vPrev);
-          else i = ((2 * C) / dt) * (v - s.vPrev) - s.iPrev;
-          if (commit) {
-            s.vPrev = v;
-            s.iPrev = i;
-          }
-          break;
-        }
+        case "capacitor":
         case "inductor": {
           const s = this.state(c.id);
-          const L = Math.max(P(c, "L"), 1e-15);
           if (dt === 0) i = s.iPrev;
-          else if (useBE) i = s.iPrev + (dt / L) * v;
-          else i = s.iPrev + (dt / (2 * L)) * (v + s.vPrev);
+          else {
+            const m = this.companion(c, s, dt, t, ctx, useBEFor(s));
+            i = m.g * v + m.ih;
+          }
           if (commit) {
+            s.vPrev2 = s.vPrev;
+            s.iPrev2 = s.iPrev;
             s.vPrev = v;
             s.iPrev = i;
+            s.hist = Math.min(2, s.hist + 1);
           }
           break;
         }
@@ -675,13 +803,10 @@ export class Simulator {
         case "ammeter":
         case "switch":
         case "vcvs":
-        case "ccvs": {
-          const br = this.branchIndex.get(c.id);
-          i = br === undefined ? 0 : x[br];
+        case "ccvs":
+          i = p.br < 0 ? 0 : x[p.br];
           break;
-        }
         case "vccs":
-          break;
         case "cccs":
           break;
         case "diode":
@@ -696,18 +821,20 @@ export class Simulator {
           i = 0;
       }
       if (isDependentSource(c.type)) {
-        vc = volts[tn[2]] - volts[tn[3]];
+        const vc = volts[p.tn[2]] - volts[p.tn[3]];
+        let ic = 0;
         if (hasControlBranch(c)) {
-          ic = x[this.branchIndex.get(c.id + ":c")!];
+          ic = x[p.brc];
           if (c.type === "cccs") i = P(c, "gain") * ic;
-        } else {
-          ic = 0;
-          if (c.type === "vccs") i = P(c, "gain") * vc;
-        }
+        } else if (c.type === "vccs") i = P(c, "gain") * vc;
+        r.ic = ic;
+        r.vc = vc;
       }
-      this.results.set(c.id, { i, v, p: v * i, ic, vc });
+      r.i = i;
+      r.v = v;
+      r.p = v * i;
     }
-    if (commit) this.forceBackwardEuler = false;
+    if (commit && this.beStepsLeft > 0) this.beStepsLeft--;
     return true;
   }
 
@@ -774,23 +901,24 @@ export class Simulator {
       const m = vertices.length;
       if (m < 2) continue;
       const n = m - 1; // le dernier sommet sert de référence
-      const A: Float64Array[] = [];
-      for (let r = 0; r < n; r++) A.push(new Float64Array(n));
+      const A = new Float64Array(n * n);
       const z = new Float64Array(n);
       for (const e of edges) {
-        if (e.ia < n) A[e.ia][e.ia] += e.g;
-        if (e.ib < n) A[e.ib][e.ib] += e.g;
+        if (e.ia < n) A[e.ia * n + e.ia] += e.g;
+        if (e.ib < n) A[e.ib * n + e.ib] += e.g;
         if (e.ia < n && e.ib < n) {
-          A[e.ia][e.ib] -= e.g;
-          A[e.ib][e.ia] -= e.g;
+          A[e.ia * n + e.ib] -= e.g;
+          A[e.ib * n + e.ia] -= e.g;
         }
       }
       for (let k = 0; k < n; k++) {
-        A[k][k] += 1e-12;
+        A[k * n + k] += 1e-12;
         z[k] = injection.get(vertices[k]) ?? 0;
       }
-      const phi = solveLinear(A, z, n);
-      if (!phi) continue;
+      const piv = new Int32Array(n);
+      if (!luFactor(A, n, piv)) continue;
+      const phi = new Float64Array(n);
+      luSolve(A, n, piv, z, phi);
       const pot = (i: number) => (i < n ? phi[i] : 0);
       for (const e of edges) {
         this.wireCurrents.set(e.w.id, e.g * (pot(e.ia) - pot(e.ib)));

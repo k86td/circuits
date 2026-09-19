@@ -16,9 +16,14 @@ const BUTTON_TAGS = /^(BUTTON|A|MD-[A-Z-]*BUTTON|MD-SWITCH|MD-CHECKBOX|MD-FILTER
 export function isEditableTarget(e: Event): boolean {
   for (const el of e.composedPath()) {
     if (!(el instanceof HTMLElement)) continue;
-    if (EDITABLE_TAGS.test(el.tagName) || el.isContentEditable) return true;
+    if (isEditableElement(el)) return true;
   }
   return false;
+}
+
+/** Vrai si l'élément est un champ de saisie (ou un composant Material qui en contient un). */
+export function isEditableElement(el: HTMLElement): boolean {
+  return EDITABLE_TAGS.test(el.tagName) || el.isContentEditable;
 }
 
 /** Vrai si la touche est pressée alors qu'un bouton a le focus (Espace / Entrée l'activent déjà). */
